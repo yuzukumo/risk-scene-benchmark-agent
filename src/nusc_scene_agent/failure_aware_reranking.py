@@ -20,8 +20,8 @@ from nusc_scene_agent.validation import validate_candidate
 
 
 FAILURE_AWARE_RERANKING_SCHEMA = "failure_aware_reranking_eval_v1"
-DEFAULT_FAILURE_AWARE_RERANKING_OUTPUT = Path("outputs/failure_aware_reranking_eval_v1")
-DEFAULT_FAILURE_UPDATE_QUERIES = Path("outputs/model_in_the_loop_failure_mining_v1/failure_update_queries.yaml")
+DEFAULT_FAILURE_AWARE_RERANKING_OUTPUT = Path("outputs/failure_aware_reranking_eval_v4")
+DEFAULT_FAILURE_UPDATE_QUERIES = Path("outputs/model_in_the_loop_failure_mining_v2/failure_update_queries.yaml")
 
 
 def run_failure_aware_reranking_eval(
@@ -66,10 +66,11 @@ def run_failure_aware_reranking_eval(
     json_path = output_dir / "failure_aware_reranking_eval.json"
     csv_path = output_dir / "failure_aware_reranking_eval.csv"
     md_path = output_dir / "failure_aware_reranking_eval.md"
+    payload["artifact_manifest"] = {"path": str(output_dir / "artifact_manifest.json")}
     json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     _write_csv(rows, csv_path)
     md_path.write_text(_render_markdown(payload), encoding="utf-8")
-    artifact_manifest = write_artifact_manifest(
+    write_artifact_manifest(
         output_dir=output_dir,
         artifacts=[
             build_artifact_entry(json_path, "evaluation", "failure_aware_reranking_metrics", output_dir),
@@ -78,11 +79,6 @@ def run_failure_aware_reranking_eval(
         ],
         metadata={"schema": FAILURE_AWARE_RERANKING_SCHEMA},
     )
-    payload["artifact_manifest"] = {
-        "path": str(output_dir / "artifact_manifest.json"),
-        "overview": artifact_manifest.get("overview", {}),
-    }
-    json_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return payload
 
 

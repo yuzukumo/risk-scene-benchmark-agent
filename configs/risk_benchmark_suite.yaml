@@ -8,14 +8,24 @@ risk_benchmark_suite:
   case_library: outputs/trainval_case_library_v1/case_library_enriched.json
   db: artifacts/index/v1.0-trainval.sqlite
   max_cases: 24
+  history_s: 2.0
+  future_s: 6.0
+  min_future_s: 3.0
+  world_model_grid_spec:
+    x_min_m: -24.0
+    x_max_m: 24.0
+    y_min_m: -24.0
+    y_max_m: 24.0
+    resolution_m: 1.0
+    dilation_radius_cells: 1
   scenario_output: benchmarks/trainval_scenario_mining_v1.yaml
   perception_output: benchmarks/trainval_perception_slices_v1.json
-  world_model_output: benchmarks/trainval_world_model_slices_v1.json
+  world_model_output: benchmarks/trainval_world_model_slices_v2.json
   bev_occupancy_output: benchmarks/trainval_bev_occupancy_slices_v1.json
   run_proxy_studies: true
   proxy_outputs:
     perception: outputs/trainval_perception_proxy_study_v1
-    world_model: outputs/trainval_world_model_proxy_study_v1
+    world_model: outputs/trainval_world_model_proxy_study_v2
     bev_occupancy: outputs/trainval_bev_occupancy_proxy_study_v1
   grid_spec:
     x_min_m: -40.0

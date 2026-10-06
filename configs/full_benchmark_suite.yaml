@@ -11,7 +11,15 @@ full_benchmark_suite:
     risk_benchmark_suite: true
     nuplan_replay_sweep: true
     nuplan_closed_loop_sweep: true
+    learned_retriever_training: true
+    contextvae_world_model_study: true
+    bench2drive_study: true
+    carla_fixed_evaluation: true
+    risk_case_expansion: true
+    contextvae_expanded_study: true
+    forecast_validation_study: true
     failure_mining: true
+    failure_aware_reranking: true
     result_registry: true
 
 case_library_generation:
@@ -32,14 +40,24 @@ risk_benchmark_suite:
   output: outputs/risk_benchmark_suite_v1
   result_path: outputs/risk_benchmark_suite_v1/experiment_result.json
   max_cases: 24
+  history_s: 2.0
+  future_s: 6.0
+  min_future_s: 3.0
+  world_model_grid_spec:
+    x_min_m: -24.0
+    x_max_m: 24.0
+    y_min_m: -24.0
+    y_max_m: 24.0
+    resolution_m: 1.0
+    dilation_radius_cells: 1
   scenario_output: benchmarks/trainval_scenario_mining_v1.yaml
   perception_output: benchmarks/trainval_perception_slices_v1.json
-  world_model_output: benchmarks/trainval_world_model_slices_v1.json
+  world_model_output: benchmarks/trainval_world_model_slices_v2.json
   bev_occupancy_output: benchmarks/trainval_bev_occupancy_slices_v1.json
   run_proxy_studies: true
   proxy_outputs:
     perception: outputs/trainval_perception_proxy_study_v1
-    world_model: outputs/trainval_world_model_proxy_study_v1
+    world_model: outputs/trainval_world_model_proxy_study_v2
     bev_occupancy: outputs/trainval_bev_occupancy_proxy_study_v1
   grid_spec:
     x_min_m: -40.0
@@ -107,9 +125,53 @@ nuplan_closed_loop_sweep:
       split_dir: data/nuplan/dataset/nuplan-v1.1/splits/train_singapore
 
 failure_mining:
-  output: outputs/model_in_the_loop_failure_mining_v1
+  output: outputs/model_in_the_loop_failure_mining_v2
   max_queries: 24
   min_count: 1
+
+learned_retriever_training:
+  db: artifacts/index/v1.0-trainval.sqlite
+  output: outputs/learned_retriever_trainval_v3
+  max_groups_per_family: 1000
+  training:
+    epochs: 20
+    validation_fraction: 0.2
+    seed: 7
+    device: cuda
+
+contextvae_world_model_study:
+  output: outputs/contextvae_world_model_study_v3
+  dataroot: data/sets/nuscenes
+  device: cuda:0
+  mode_count: 5
+  clustering_samples: 2000
+  seed: 1
+
+failure_aware_reranking:
+  db: artifacts/index/v1.0-trainval.sqlite
+  output: outputs/failure_aware_reranking_eval_v4
+  candidate_pool: 48
+  top_k: 3
+  max_queries: 24
+
+bench2drive_study:
+  config_path: configs/bench2drive_controlled_study.yaml
+
+risk_case_expansion:
+  db: artifacts/index/v1.0-trainval.sqlite
+  output: outputs/risk_case_expansion_v2
+  per_family: 30
+  candidate_limit: 180
+  reuse_validated: true
+
+carla_fixed_evaluation:
+  config_path: configs/carla_fixed_evaluation.yaml
+
+contextvae_expanded_study:
+  config_path: configs/contextvae_expanded_study.yaml
+
+forecast_validation_study:
+  config_path: configs/forecast_validation_study.yaml
 
 result_registry:
   output: outputs/full_benchmark_suite_v1/result_registry
@@ -117,11 +179,16 @@ result_registry:
     - outputs/risk_benchmark_suite_v1/experiment_result.json
     - outputs/nuplan_replay_sweep_v1/nuplan_replay_sweep_summary.json
     - outputs/nuplan_closed_loop_sweep_v1/nuplan_closed_loop_sweep_summary.json
-    - outputs/bench2drive_vision_e2e_final/training_report.json
-    - outputs/bench2drive_vision_e2e_final/eval_test/evaluation_report.json
-    - outputs/bench2drive_vision_e2e_final/diagnostics/planner_diagnostics_report.json
-    - outputs/bench2drive_vision_closed_loop_final/closed_loop_report.json
+    - outputs/bench2drive_controlled_study_v2/study_summary.json
+    - outputs/carla_fixed_evaluation_v3/fixed_evaluation.json
+    - outputs/contextvae_world_model_study_v3/contextvae_study_manifest.json
+    - outputs/contextvae_expanded_study_v1/contextvae_study_manifest.json
+    - outputs/forecast_validation_study_v1/contextvae/contextvae_study_manifest.json
+    - outputs/forecast_validation_study_v1/scene_disjoint_audit/generalization_audit.json
+    - outputs/learned_retriever_trainval_v3/training_report.json
+    - outputs/risk_case_expansion_v2/expansion_report.json
+    - outputs/failure_aware_reranking_eval_v4/failure_aware_reranking_eval.json
     - outputs/carla_semantic_demo_final/carla_semantic_demo_mining_report.json
     - outputs/carla_semantic_demo_final/carla_semantic_demo_report.json
     - outputs/carla_semantic_demo_final/carla_semantic_demo_audit.json
-    - outputs/model_in_the_loop_failure_mining_v1/failure_mining_report.json
+    - outputs/model_in_the_loop_failure_mining_v2/failure_mining_report.json

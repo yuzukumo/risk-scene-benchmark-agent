@@ -19,6 +19,27 @@ from nusc_scene_agent.geometry import ego_xy_to_global, global_xy_to_anchor_ego
 from nusc_scene_agent.perception_benchmark import CATEGORY_ALIASES, RISK_FACET_FIELDS
 
 
+def _optional_float(value: object) -> float | None:
+    return float(value) if value is not None and math.isfinite(float(value)) else None
+
+
+def _metric_mean(values: Iterable[object]) -> float | None:
+    finite = [number for value in values if (number := _optional_float(value)) is not None]
+    return round(mean(finite), 4) if finite else None
+
+
+def _format_metric(value: object) -> str:
+    number = _optional_float(value)
+    return f"{number:.3f}" if number is not None else "n/a"
+
+
+def _profile_sort_key(row: Dict[str, object]) -> tuple:
+    errors = [_optional_float(row.get(name)) for name in ["mean_min_ade_at_5", "mean_ade_m"]]
+    return (float(row.get("mean_risk_fidelity_score") or 0.0), float(row["full_horizon_rate"]),
+            *[-value if value is not None else -math.inf for value in errors],
+            float(row.get("mean_occupancy_iou") or 0.0))
+
+
 WORLD_MODEL_SUMMARY_TEMPLATE = Template(
     """
 <!DOCTYPE html>
@@ -48,12 +69,12 @@ WORLD_MODEL_SUMMARY_TEMPLATE = Template(
   <table>
     <tbody>
       <tr><th>Mean Horizon Recall</th><td>{{ "%.3f"|format(summary.overview.mean_horizon_recall) }}</td></tr>
-      <tr><th>Mean ADE</th><td>{{ "%.3f"|format(summary.overview.mean_ade_m) }}</td></tr>
-      <tr><th>Mean FDE</th><td>{{ "%.3f"|format(summary.overview.mean_fde_m) }}</td></tr>
+      <tr><th>Mean ADE</th><td>{{ metric(summary.overview.mean_ade_m) }}</td></tr>
+      <tr><th>Mean FDE</th><td>{{ metric(summary.overview.mean_fde_m) }}</td></tr>
       <tr><th>Mean Occupancy IoU</th><td>{{ "%.3f"|format(summary.overview.mean_occupancy_iou) }}</td></tr>
       <tr><th>Mean Primary Actor IoU</th><td>{{ "%.3f"|format(summary.overview.mean_primary_actor_iou) }}</td></tr>
-      <tr><th>Mean Closest-Approach Distance Error</th><td>{{ "%.3f"|format(summary.overview.mean_closest_approach_distance_error_m) }}</td></tr>
-      <tr><th>Mean Closest-Approach Time Error</th><td>{{ "%.3f"|format(summary.overview.mean_closest_approach_time_error_s) }}</td></tr>
+      <tr><th>Mean Closest-Approach Distance Error</th><td>{{ metric(summary.overview.mean_closest_approach_distance_error_m) }}</td></tr>
+      <tr><th>Mean Closest-Approach Time Error</th><td>{{ metric(summary.overview.mean_closest_approach_time_error_s) }}</td></tr>
       <tr><th>Perfect Cases</th><td>{{ summary.overview.perfect_case_count }}</td></tr>
     </tbody>
   </table>
@@ -62,10 +83,10 @@ WORLD_MODEL_SUMMARY_TEMPLATE = Template(
   <table>
     <tbody>
       <tr><th>Mean Mode Count</th><td>{{ "%.2f"|format(summary.forecast_metrics.mean_mode_count) }}</td></tr>
-      <tr><th>Mean MinADE@1</th><td>{{ "%.3f"|format(summary.forecast_metrics.mean_min_ade_at_1) }}</td></tr>
-      <tr><th>Mean MinADE@5</th><td>{{ "%.3f"|format(summary.forecast_metrics.mean_min_ade_at_5) }}</td></tr>
-      <tr><th>Mean MinFDE@1</th><td>{{ "%.3f"|format(summary.forecast_metrics.mean_min_fde_at_1) }}</td></tr>
-      <tr><th>Mean MinFDE@5</th><td>{{ "%.3f"|format(summary.forecast_metrics.mean_min_fde_at_5) }}</td></tr>
+      <tr><th>Mean MinADE@1</th><td>{{ metric(summary.forecast_metrics.mean_min_ade_at_1) }}</td></tr>
+      <tr><th>Mean MinADE@5</th><td>{{ metric(summary.forecast_metrics.mean_min_ade_at_5) }}</td></tr>
+      <tr><th>Mean MinFDE@1</th><td>{{ metric(summary.forecast_metrics.mean_min_fde_at_1) }}</td></tr>
+      <tr><th>Mean MinFDE@5</th><td>{{ metric(summary.forecast_metrics.mean_min_fde_at_5) }}</td></tr>
       <tr><th>Mean MissRate@1</th><td>{{ "%.3f"|format(summary.forecast_metrics.mean_miss_rate_at_1) }}</td></tr>
       <tr><th>Mean MissRate@5</th><td>{{ "%.3f"|format(summary.forecast_metrics.mean_miss_rate_at_5) }}</td></tr>
     </tbody>
@@ -85,7 +106,7 @@ WORLD_MODEL_SUMMARY_TEMPLATE = Template(
         <td>{{ row.case_count }}</td>
         <td>{{ row.full_horizon_count }}/{{ row.case_count }} ({{ "%.1f"|format(row.full_horizon_rate * 100.0) }}%)</td>
         <td>{{ "%.3f"|format(row.mean_risk_fidelity_score) }}</td>
-        <td>{{ "%.3f"|format(row.mean_ade_m) }}</td>
+        <td>{{ metric(row.mean_ade_m) }}</td>
         <td>{{ "%.3f"|format(row.mean_occupancy_iou) }}</td>
         <td>{{ row.top_failure_summary }}</td>
       </tr>
@@ -107,7 +128,7 @@ WORLD_MODEL_SUMMARY_TEMPLATE = Template(
         <td>{{ row.case_count }}</td>
         <td>{{ row.full_horizon_count }}/{{ row.case_count }} ({{ "%.1f"|format(row.full_horizon_rate * 100.0) }}%)</td>
         <td>{{ "%.3f"|format(row.mean_risk_fidelity_score) }}</td>
-        <td>{{ "%.3f"|format(row.mean_ade_m) }}</td>
+        <td>{{ metric(row.mean_ade_m) }}</td>
         <td>{{ "%.3f"|format(row.mean_occupancy_iou) }}</td>
         <td>{{ row.top_failure_summary }}</td>
       </tr>
@@ -130,7 +151,7 @@ WORLD_MODEL_SUMMARY_TEMPLATE = Template(
         <td>{{ row.case_count }}</td>
         <td>{{ row.full_horizon_count }}/{{ row.case_count }} ({{ "%.1f"|format(row.full_horizon_rate * 100.0) }}%)</td>
         <td>{{ "%.3f"|format(row.mean_risk_fidelity_score) }}</td>
-        <td>{{ "%.3f"|format(row.mean_ade_m) }}</td>
+        <td>{{ metric(row.mean_ade_m) }}</td>
         <td>{{ "%.3f"|format(row.mean_occupancy_iou) }}</td>
         <td>{{ row.top_failure_summary }}</td>
       </tr>
@@ -179,13 +200,13 @@ WORLD_MODEL_COMPARISON_TEMPLATE = Template(
       <tr>
         <td>{{ row.label }}</td>
         <td>{{ row.full_horizon_count }}/{{ row.case_count }} ({{ "%.1f"|format(row.full_horizon_rate * 100.0) }}%)</td>
-        <td>{{ "%.3f"|format(row.mean_risk_fidelity_score) }}</td>
-        <td>{{ "%.3f"|format(row.mean_ade_m) }}</td>
-        <td>{{ "%.3f"|format(row.mean_min_ade_at_1) }}</td>
-        <td>{{ "%.3f"|format(row.mean_min_ade_at_5) }}</td>
-        <td>{{ "%.3f"|format(row.mean_miss_rate_at_5) }}</td>
-        <td>{{ "%.3f"|format(row.mean_occupancy_iou) }}</td>
-        <td>{{ "%.3f"|format(row.mean_closest_approach_time_error_s) }}</td>
+        <td>{{ metric(row.mean_risk_fidelity_score) }}</td>
+        <td>{{ metric(row.mean_ade_m) }}</td>
+        <td>{{ metric(row.mean_min_ade_at_1) }}</td>
+        <td>{{ metric(row.mean_min_ade_at_5) }}</td>
+        <td>{{ metric(row.mean_miss_rate_at_5) }}</td>
+        <td>{{ metric(row.mean_occupancy_iou) }}</td>
+        <td>{{ metric(row.mean_closest_approach_time_error_s) }}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -395,11 +416,6 @@ def _split_history_future(case: Dict[str, object]) -> Tuple[List[Dict[str, objec
     anchor_sample_idx = int(case["anchor_sample_idx"])
     history = [dict(frame) for frame in frames if _safe_int(frame.get("sample_idx")) <= anchor_sample_idx]
     future = [dict(frame) for frame in frames if _safe_int(frame.get("sample_idx")) > anchor_sample_idx]
-    if not history and frames:
-        history = [dict(frames[0])]
-    if not future and len(frames) >= 2:
-        history = [dict(frame) for frame in frames[:-1]]
-        future = [dict(frames[-1])]
     return history, future
 
 
@@ -594,6 +610,10 @@ def generate_world_model_benchmark_from_perception_benchmark(
     db_path: Path,
     output_path: Path,
     grid_spec: Optional[Dict[str, float]] = None,
+    *,
+    history_s: float = 2.0,
+    future_s: float = 6.0,
+    min_future_s: float = 0.0,
 ) -> Dict[str, object]:
     perception_payload = _load_json(perception_benchmark_path)
     grid = dict(DEFAULT_GRID_SPEC)
@@ -602,16 +622,43 @@ def generate_world_model_benchmark_from_perception_benchmark(
 
     all_window_tokens: List[str] = []
     split_cases = []
-    for raw_case in list(perception_payload.get("cases") or []):
-        history_frames, future_frames = _split_history_future(raw_case)
-        if not future_frames:
-            continue
-        split_cases.append((dict(raw_case), history_frames, future_frames))
-        all_window_tokens.extend(str(frame["sample_token"]) for frame in list(history_frames) + list(future_frames))
-
+    excluded = []
+    if history_s < 0.0 or future_s <= 0.0 or not 0.0 <= min_future_s <= future_s:
+        raise ValueError("Forecast durations require history >= 0 and 0 <= min_future <= future.")
     conn = sqlite3.connect(str(db_path.resolve()))
     conn.row_factory = sqlite3.Row
     try:
+        for original in list(perception_payload.get("cases") or []):
+            raw_case = dict(original)
+            anchor = conn.execute("SELECT timestamp_us, sample_idx FROM samples WHERE sample_token = ?",
+                                  (raw_case["anchor_sample_token"],)).fetchone()
+            if anchor is None:
+                excluded.append({"reference_case_key": raw_case["reference_case_key"], "reason": "missing_anchor_sample"})
+                continue
+            anchor_us = int(anchor["timestamp_us"])
+            raw_case["anchor_sample_idx"] = int(anchor["sample_idx"])
+            rows = conn.execute(
+                "SELECT a.sample_token, a.sample_idx, s.timestamp_us, a.x_ego, a.y_ego, a.distance "
+                "FROM agents a JOIN samples s ON s.sample_token = a.sample_token "
+                "WHERE a.scene_token = ? AND a.instance_token = ? AND s.timestamp_us BETWEEN ? AND ? "
+                "ORDER BY s.timestamp_us",
+                (raw_case["scene_token"], raw_case["instance_token"],
+                 anchor_us - int((history_s + 0.05) * 1e6), anchor_us + int((future_s + 0.05) * 1e6)),
+            ).fetchall()
+            raw_case["frames"] = [dict(row) for row in rows]
+            history_frames, future_frames = _split_history_future(raw_case)
+            if not history_frames or history_frames[-1]["sample_token"] != raw_case["anchor_sample_token"]:
+                excluded.append({"reference_case_key": raw_case["reference_case_key"], "reason": "missing_anchor_actor"})
+                continue
+            duration = ((int(future_frames[-1]["timestamp_us"]) - int(history_frames[-1]["timestamp_us"])) / 1e6
+                        if history_frames and future_frames else 0.0)
+            if not future_frames or duration + 0.05 < min_future_s:
+                excluded.append({"reference_case_key": raw_case["reference_case_key"],
+                                 "reason": "insufficient_future_track", "available_future_s": duration})
+                continue
+            split_cases.append((raw_case, history_frames, future_frames))
+            all_window_tokens.extend(str(frame["sample_token"]) for frame in history_frames + future_frames)
+        all_window_tokens = list(dict.fromkeys(all_window_tokens))
         context_index = _build_context_index(conn, all_window_tokens)
         sample_pose_index = _build_sample_pose_index(conn, all_window_tokens)
     finally:
@@ -691,6 +738,7 @@ def generate_world_model_benchmark_from_perception_benchmark(
             "event_peak_sample_idx": _safe_int(raw_case["event_peak_sample_idx"]),
             "history_frame_count": len(history_frames),
             "future_frame_count": len(future_frames),
+            "future_duration_s": (int(future_frames[-1]["timestamp_us"]) - int(history_frames[-1]["timestamp_us"])) / 1e6,
             "history_duration_s": _duration_s(history_frames),
             "history_frames": history_frames,
             "future_frames": future_frames,
@@ -713,6 +761,12 @@ def generate_world_model_benchmark_from_perception_benchmark(
             "source_perception_benchmark": str(perception_benchmark_path),
             "db_path": str(db_path),
             "case_count": len(cases),
+            "requested_history_s": history_s,
+            "requested_future_s": future_s,
+            "minimum_future_s": min_future_s,
+            "anchor_policy": "preserve mined anchor; load the actor track beyond the event window",
+            "excluded_cases": excluded,
+            "full_horizon_case_count": sum(case["future_duration_s"] >= future_s - 0.1 for case in cases),
             "grid_spec": grid,
             "challenge_tracks": _build_track_catalog(cases),
         },
@@ -1174,7 +1228,7 @@ def _benchmark_horizon_seconds(benchmark: Dict[str, object]) -> float:
         value = _safe_float((case.get("motion_targets") or {}).get("horizon_s"), 0.0)
         if value > horizon_s:
             horizon_s = value
-    rounded = max(0.5, math.ceil(horizon_s / 0.5) * 0.5)
+    rounded = max(0.5, round(horizon_s / 0.5) * 0.5)
     return round(float(rounded), 3)
 
 
@@ -1462,6 +1516,13 @@ def adapt_and_evaluate_nuscenes_forecast_predictions(
     }
 
 
+class _FrameCountPredictHelper(PredictHelper):
+    def get_future_for_agent(self, instance_token, sample_token, seconds, **kwargs):
+        # Keyframe timestamps jitter around 2 Hz; the oracle requires exactly K frames.
+        future = super().get_future_for_agent(instance_token, sample_token, seconds + 0.1, **kwargs)
+        return future[:int(round(seconds * 2))]
+
+
 def generate_nuscenes_forecast_baselines(
     benchmark_path: Path,
     dataroot: Path,
@@ -1477,7 +1538,7 @@ def generate_nuscenes_forecast_baselines(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     nusc = NuScenes(version=version, dataroot=str(dataroot), verbose=False)
-    helper = PredictHelper(nusc)
+    helper = _FrameCountPredictHelper(nusc)
 
     output_paths = {}
     for profile_name, model_cls in {
@@ -1505,6 +1566,7 @@ def generate_nuscenes_forecast_baselines(
         "case_count": len(tokens),
         "horizon_s": horizon_s,
         "profiles": output_paths,
+        "oracle_ground_truth_alignment": "2 Hz frame count with 0.1 s timestamp tolerance",
     }
     (output_dir / "baseline_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
     return {
@@ -1793,7 +1855,7 @@ def _build_group_breakdown(
                 "full_horizon_count": int(bucket["full_horizon_count"]),
                 "full_horizon_rate": round(_ratio(int(bucket["full_horizon_count"]), int(bucket["case_count"])), 4),
                 "mean_risk_fidelity_score": round(mean(bucket["risk_scores"]), 4) if bucket["risk_scores"] else 0.0,
-                "mean_ade_m": round(mean(bucket["ade_values"]), 4) if bucket["ade_values"] else 0.0,
+                "mean_ade_m": _metric_mean(bucket["ade_values"]),
                 "mean_occupancy_iou": round(mean(bucket["occupancy_values"]), 4) if bucket["occupancy_values"] else 0.0,
                 "top_failure_modes": failure_rows[:3],
                 "top_failure_summary": ", ".join(
@@ -1837,6 +1899,8 @@ def evaluate_world_model_predictions(
     case_metrics = []
     for case in list(benchmark.get("cases") or []):
         row = _evaluate_world_model_case(case, prediction_index.get(str(case["benchmark_group"])))
+        row["scene_token"] = str(case.get("scene_token") or "")
+        row["scene_name"] = str(case.get("scene_name") or "")
         support = dict(case.get("risk_facets") or {})
         row.update({name: str(support.get(name) or "unknown") for name in RISK_FACET_FIELDS})
         row["challenge_tracks"] = list(case.get("challenge_tracks") or [])
@@ -1894,24 +1958,24 @@ def evaluate_world_model_predictions(
             "full_horizon_count": full_horizon_count,
             "full_horizon_rate": round(_ratio(full_horizon_count, len(case_metrics)), 4),
             "mean_horizon_recall": round(mean(horizon_recalls), 4) if horizon_recalls else 0.0,
-            "mean_ade_m": round(mean(ade_values), 4) if ade_values else 0.0,
-            "mean_fde_m": round(mean(fde_values), 4) if fde_values else 0.0,
+            "mean_ade_m": _metric_mean(ade_values),
+            "mean_fde_m": _metric_mean(fde_values),
             "mean_occupancy_iou": round(mean(occupancy_values), 4) if occupancy_values else 0.0,
             "mean_primary_actor_iou": round(mean(primary_values), 4) if primary_values else 0.0,
             "mean_context_iou": round(mean(context_values), 4) if context_values else 0.0,
-            "mean_closest_approach_distance_error_m": round(mean(closest_distance_values), 4) if closest_distance_values else 0.0,
-            "mean_closest_approach_time_error_s": round(mean(closest_time_values), 4) if closest_time_values else 0.0,
+            "mean_closest_approach_distance_error_m": _metric_mean(closest_distance_values),
+            "mean_closest_approach_time_error_s": _metric_mean(closest_time_values),
             "mean_risk_fidelity_score": round(mean(risk_scores), 4) if risk_scores else 0.0,
             "perfect_case_count": perfect_case_count,
         },
         "forecast_metrics": {
             "mean_mode_count": round(mean(mode_counts), 4) if mode_counts else 0.0,
-            "mean_min_ade_at_1": round(mean(min_ade_at_1_values), 4) if min_ade_at_1_values else 0.0,
-            "mean_min_ade_at_5": round(mean(min_ade_at_5_values), 4) if min_ade_at_5_values else 0.0,
-            "mean_min_ade_at_10": round(mean(min_ade_at_10_values), 4) if min_ade_at_10_values else 0.0,
-            "mean_min_fde_at_1": round(mean(min_fde_at_1_values), 4) if min_fde_at_1_values else 0.0,
-            "mean_min_fde_at_5": round(mean(min_fde_at_5_values), 4) if min_fde_at_5_values else 0.0,
-            "mean_min_fde_at_10": round(mean(min_fde_at_10_values), 4) if min_fde_at_10_values else 0.0,
+            "mean_min_ade_at_1": _metric_mean(min_ade_at_1_values),
+            "mean_min_ade_at_5": _metric_mean(min_ade_at_5_values),
+            "mean_min_ade_at_10": _metric_mean(min_ade_at_10_values),
+            "mean_min_fde_at_1": _metric_mean(min_fde_at_1_values),
+            "mean_min_fde_at_5": _metric_mean(min_fde_at_5_values),
+            "mean_min_fde_at_10": _metric_mean(min_fde_at_10_values),
             "mean_miss_rate_at_1": round(mean(miss_rate_at_1_values), 4) if miss_rate_at_1_values else 0.0,
             "mean_miss_rate_at_5": round(mean(miss_rate_at_5_values), 4) if miss_rate_at_5_values else 0.0,
             "mean_miss_rate_at_10": round(mean(miss_rate_at_10_values), 4) if miss_rate_at_10_values else 0.0,
@@ -1937,12 +2001,12 @@ def evaluate_world_model_predictions(
             summary["overview"]["full_horizon_rate"],
         ),
         "- Mean horizon recall: {0:.3f}".format(summary["overview"]["mean_horizon_recall"]),
-        "- Mean ADE: {0:.3f}".format(summary["overview"]["mean_ade_m"]),
-        "- Mean FDE: {0:.3f}".format(summary["overview"]["mean_fde_m"]),
+        "- Mean ADE: {0}".format(_format_metric(summary["overview"]["mean_ade_m"])),
+        "- Mean FDE: {0}".format(_format_metric(summary["overview"]["mean_fde_m"])),
         "- Mean occupancy IoU: {0:.3f}".format(summary["overview"]["mean_occupancy_iou"]),
         "- Mean risk fidelity: {0:.3f}".format(summary["overview"]["mean_risk_fidelity_score"]),
-        "- Mean MinADE@1: {0:.3f}".format(summary["forecast_metrics"]["mean_min_ade_at_1"]),
-        "- Mean MinADE@5: {0:.3f}".format(summary["forecast_metrics"]["mean_min_ade_at_5"]),
+        "- Mean MinADE@1: {0}".format(_format_metric(summary["forecast_metrics"]["mean_min_ade_at_1"])),
+        "- Mean MinADE@5: {0}".format(_format_metric(summary["forecast_metrics"]["mean_min_ade_at_5"])),
         "- Mean MissRate@5: {0:.3f}".format(summary["forecast_metrics"]["mean_miss_rate_at_5"]),
         "",
         "## Behavior Breakdown",
@@ -1952,13 +2016,13 @@ def evaluate_world_model_predictions(
     ]
     for row in behavior_breakdown:
         lines.append(
-            "| {0} | {1} | {2}/{1} ({3:.1%}) | {4:.3f} | {5:.3f} | {6:.3f} | {7} |".format(
+            "| {0} | {1} | {2}/{1} ({3:.1%}) | {4:.3f} | {5} | {6:.3f} | {7} |".format(
                 row["behavior"],
                 row["case_count"],
                 row["full_horizon_count"],
                 row["full_horizon_rate"],
                 row["mean_risk_fidelity_score"],
-                row["mean_ade_m"],
+                _format_metric(row["mean_ade_m"]),
                 row["mean_occupancy_iou"],
                 row["top_failure_summary"],
             )
@@ -1966,13 +2030,13 @@ def evaluate_world_model_predictions(
     lines.extend(["", "## Challenge Track Breakdown", "", "| Track | Cases | Full Horizon | Risk Fidelity | ADE | Occupancy IoU | Top Failure Modes |", "| --- | --- | --- | --- | --- | --- | --- |"])
     for row in track_breakdown:
         lines.append(
-            "| {0} | {1} | {2}/{1} ({3:.1%}) | {4:.3f} | {5:.3f} | {6:.3f} | {7} |".format(
+            "| {0} | {1} | {2}/{1} ({3:.1%}) | {4:.3f} | {5} | {6:.3f} | {7} |".format(
                 row["track"],
                 row["case_count"],
                 row["full_horizon_count"],
                 row["full_horizon_rate"],
                 row["mean_risk_fidelity_score"],
-                row["mean_ade_m"],
+                _format_metric(row["mean_ade_m"]),
                 row["mean_occupancy_iou"],
                 row["top_failure_summary"],
             )
@@ -1989,13 +2053,13 @@ def evaluate_world_model_predictions(
         )
         for row in risk_breakdowns[field_name]:
             lines.append(
-                "| {0} | {1} | {2}/{1} ({3:.1%}) | {4:.3f} | {5:.3f} | {6:.3f} | {7} |".format(
+                "| {0} | {1} | {2}/{1} ({3:.1%}) | {4:.3f} | {5} | {6:.3f} | {7} |".format(
                     row[field_name],
                     row["case_count"],
                     row["full_horizon_count"],
                     row["full_horizon_rate"],
                     row["mean_risk_fidelity_score"],
-                    row["mean_ade_m"],
+                    _format_metric(row["mean_ade_m"]),
                     row["mean_occupancy_iou"],
                     row["top_failure_summary"],
                 )
@@ -2003,13 +2067,15 @@ def evaluate_world_model_predictions(
         lines.append("")
     (output_dir / "world_model_metrics_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (output_dir / "world_model_metrics_summary.html").write_text(
-        WORLD_MODEL_SUMMARY_TEMPLATE.render(summary=summary),
+        WORLD_MODEL_SUMMARY_TEMPLATE.render(summary=summary, metric=_format_metric),
         encoding="utf-8",
     )
     with (output_dir / "world_model_case_metrics.csv").open("w", encoding="utf-8", newline="") as handle:
         fieldnames = [
             "benchmark_group",
             "reference_case_key",
+            "scene_token",
+            "scene_name",
             "primary_behavior",
             "category_group",
             "location",
@@ -2069,19 +2135,19 @@ def build_world_model_comparison(run_summaries: Sequence[Dict[str, object]]) -> 
                 "full_horizon_count": int(overview.get("full_horizon_count") or 0),
                 "full_horizon_rate": float(overview.get("full_horizon_rate") or 0.0),
                 "mean_horizon_recall": float(overview.get("mean_horizon_recall") or 0.0),
-                "mean_ade_m": float(overview.get("mean_ade_m") or 0.0),
-                "mean_fde_m": float(overview.get("mean_fde_m") or 0.0),
+                "mean_ade_m": _optional_float(overview.get("mean_ade_m")),
+                "mean_fde_m": _optional_float(overview.get("mean_fde_m")),
                 "mean_occupancy_iou": float(overview.get("mean_occupancy_iou") or 0.0),
                 "mean_primary_actor_iou": float(overview.get("mean_primary_actor_iou") or 0.0),
-                "mean_closest_approach_distance_error_m": float(overview.get("mean_closest_approach_distance_error_m") or 0.0),
-                "mean_closest_approach_time_error_s": float(overview.get("mean_closest_approach_time_error_s") or 0.0),
+                "mean_closest_approach_distance_error_m": _optional_float(overview.get("mean_closest_approach_distance_error_m")),
+                "mean_closest_approach_time_error_s": _optional_float(overview.get("mean_closest_approach_time_error_s")),
                 "mean_risk_fidelity_score": float(overview.get("mean_risk_fidelity_score") or 0.0),
-                "mean_min_ade_at_1": float((item.get("forecast_metrics") or {}).get("mean_min_ade_at_1") or 0.0),
-                "mean_min_ade_at_5": float((item.get("forecast_metrics") or {}).get("mean_min_ade_at_5") or 0.0),
-                "mean_min_fde_at_1": float((item.get("forecast_metrics") or {}).get("mean_min_fde_at_1") or 0.0),
-                "mean_min_fde_at_5": float((item.get("forecast_metrics") or {}).get("mean_min_fde_at_5") or 0.0),
-                "mean_miss_rate_at_1": float((item.get("forecast_metrics") or {}).get("mean_miss_rate_at_1") or 0.0),
-                "mean_miss_rate_at_5": float((item.get("forecast_metrics") or {}).get("mean_miss_rate_at_5") or 0.0),
+                "mean_min_ade_at_1": _optional_float((item.get("forecast_metrics") or {}).get("mean_min_ade_at_1")),
+                "mean_min_ade_at_5": _optional_float((item.get("forecast_metrics") or {}).get("mean_min_ade_at_5")),
+                "mean_min_fde_at_1": _optional_float((item.get("forecast_metrics") or {}).get("mean_min_fde_at_1")),
+                "mean_min_fde_at_5": _optional_float((item.get("forecast_metrics") or {}).get("mean_min_fde_at_5")),
+                "mean_miss_rate_at_1": _optional_float((item.get("forecast_metrics") or {}).get("mean_miss_rate_at_1")),
+                "mean_miss_rate_at_5": _optional_float((item.get("forecast_metrics") or {}).get("mean_miss_rate_at_5")),
             }
         )
         for row in list(item.get("behavior_breakdown") or []):
@@ -2095,16 +2161,7 @@ def build_world_model_comparison(run_summaries: Sequence[Dict[str, object]]) -> 
                 risk_value = str(row.get(field_name) or "unknown")
                 risk_index[field_name][risk_value][profile_name] = dict(row)
 
-    profiles.sort(
-        key=lambda row: (
-            float(row["mean_risk_fidelity_score"]),
-            float(row["full_horizon_rate"]),
-            -float(row["mean_min_ade_at_5"]),
-            -float(row["mean_ade_m"]),
-            float(row["mean_occupancy_iou"]),
-        ),
-        reverse=True,
-    )
+    profiles.sort(key=_profile_sort_key, reverse=True)
     profile_order = [str(row["name"]) for row in profiles]
     full_set_profiles = [dict(row) for row in profiles]
 
@@ -2120,23 +2177,16 @@ def build_world_model_comparison(run_summaries: Sequence[Dict[str, object]]) -> 
     common_case_keys = set.intersection(*(set(mapping) for mapping in case_maps.values())) if case_maps else set()
 
     def _common_metric_rows(rows: Sequence[Dict[str, object]]) -> Dict[str, object]:
-        def _mean_metric(name: str) -> float:
-            values = [float(row[name]) for row in rows if row.get(name) is not None]
-            return round(mean(values), 4) if values else 0.0
-
         full_horizon_count = sum(1 for row in rows if bool(row.get("full_horizon_success")))
         return {
             "case_count": len(rows),
             "full_horizon_count": full_horizon_count,
             "full_horizon_rate": round(_ratio(full_horizon_count, len(rows)), 4),
-            "mean_horizon_recall": _mean_metric("horizon_recall"),
-            "mean_ade_m": _mean_metric("ade_m"),
-            "mean_fde_m": _mean_metric("fde_m"),
-            "mean_occupancy_iou": _mean_metric("occupancy_iou"),
-            "mean_primary_actor_iou": _mean_metric("primary_actor_iou"),
-            "mean_risk_fidelity_score": _mean_metric("risk_fidelity_score"),
-            "mean_min_ade_at_5": _mean_metric("min_ade_at_5"),
-            "mean_miss_rate_at_5": _mean_metric("miss_rate_at_5"),
+            **{"mean_" + name: _metric_mean(row.get(name) for row in rows) for name in [
+                "horizon_recall", "ade_m", "fde_m", "occupancy_iou", "primary_actor_iou", "risk_fidelity_score",
+                "closest_approach_distance_error_m", "closest_approach_time_error_s",
+                "min_ade_at_1", "min_ade_at_5", "min_fde_at_1", "min_fde_at_5", "miss_rate_at_1", "miss_rate_at_5",
+            ]},
         }
 
     common_case_summary = []
@@ -2144,15 +2194,38 @@ def build_world_model_comparison(run_summaries: Sequence[Dict[str, object]]) -> 
     bootstrap_replicates = 5000
     ordered_common_keys = sorted(common_case_keys)
     bootstrap_rng = np.random.default_rng(bootstrap_seed)
-    bootstrap_indices = (
-        bootstrap_rng.integers(
-            0,
-            len(ordered_common_keys),
-            size=(bootstrap_replicates, len(ordered_common_keys)),
-        )
-        if ordered_common_keys
-        else np.empty((0, 0), dtype=int)
-    )
+    clusters = []
+    for key in ordered_common_keys:
+        scene_ids = {str(case_maps[name][key].get("scene_token") or case_maps[name][key].get("scene_name") or "")
+                     for name in profile_order}
+        scene_ids.discard("")
+        if len(scene_ids) > 1:
+            raise ValueError(f"Paired forecast case has inconsistent scene identities: {key}")
+        clusters.append(next(iter(scene_ids), key))
+    cluster_names = sorted(set(clusters))
+    cluster_index = {name: index for index, name in enumerate(cluster_names)}
+    cluster_ids = np.asarray([cluster_index[name] for name in clusters], dtype=int)
+    weights = np.zeros((bootstrap_replicates, len(ordered_common_keys)), dtype=int)
+    if cluster_names:
+        sampled_clusters = bootstrap_rng.integers(0, len(cluster_names), size=(bootstrap_replicates, len(cluster_names)))
+        cluster_counts = np.zeros((bootstrap_replicates, len(cluster_names)), dtype=int)
+        np.add.at(cluster_counts, (np.arange(bootstrap_replicates)[:, None], sampled_clusters), 1)
+        weights = cluster_counts[:, cluster_ids]
+
+    def _metric_values(rows: Sequence[Dict[str, object]], name: str) -> np.ndarray:
+        return np.asarray([float(row[name]) if row.get(name) is not None else np.nan for row in rows])
+
+    def _interval(values: np.ndarray) -> Optional[Dict[str, object]]:
+        finite = np.isfinite(values)
+        if not finite.any():
+            return None
+        valid_weights = weights[:, finite]
+        counts = valid_weights.sum(axis=1)
+        means = (valid_weights @ values[finite])[counts > 0] / counts[counts > 0]
+        low, high = np.percentile(means, [2.5, 97.5])
+        return {"mean": round(float(np.mean(values[finite])), 6), "ci95_low": round(float(low), 6),
+                "ci95_high": round(float(high), 6), "case_count": int(finite.sum()),
+                "cluster_count": len(set(cluster_ids[finite]))}
     for profile_name in profile_order:
         common_rows = [case_maps.get(profile_name, {}).get(key, {}) for key in ordered_common_keys]
         summary_row = {
@@ -2162,15 +2235,9 @@ def build_world_model_comparison(run_summaries: Sequence[Dict[str, object]]) -> 
         }
         metric_uncertainty: Dict[str, Dict[str, float]] = {}
         for metric_name in ["ade_m", "fde_m", "risk_fidelity_score", "occupancy_iou"]:
-            values = np.asarray([float(row.get(metric_name) or 0.0) for row in common_rows], dtype=float)
-            if values.size:
-                bootstrap_means = np.mean(values[bootstrap_indices], axis=1)
-                low, high = np.percentile(bootstrap_means, [2.5, 97.5])
-                metric_uncertainty[metric_name] = {
-                    "mean": round(float(np.mean(values)), 6),
-                    "ci95_low": round(float(low), 6),
-                    "ci95_high": round(float(high), 6),
-                }
+            interval = _interval(_metric_values(common_rows, metric_name))
+            if interval is not None:
+                metric_uncertainty[metric_name] = interval
         summary_row["uncertainty"] = metric_uncertainty
         common_case_summary.append(summary_row)
 
@@ -2185,22 +2252,12 @@ def build_world_model_comparison(run_summaries: Sequence[Dict[str, object]]) -> 
                     "deltas": {},
                 }
                 for metric_name in ["ade_m", "fde_m", "risk_fidelity_score", "occupancy_iou"]:
-                    left_values = np.asarray(
-                        [float(case_maps[left_name][key].get(metric_name) or 0.0) for key in ordered_common_keys],
-                        dtype=float,
-                    )
-                    right_values = np.asarray(
-                        [float(case_maps[right_name][key].get(metric_name) or 0.0) for key in ordered_common_keys],
-                        dtype=float,
-                    )
-                    deltas = right_values - left_values
-                    bootstrap_deltas = np.mean(deltas[bootstrap_indices], axis=1)
-                    low, high = np.percentile(bootstrap_deltas, [2.5, 97.5])
-                    comparison_row["deltas"][metric_name] = {
-                        "profile_b_minus_profile_a": round(float(np.mean(deltas)), 6),
-                        "ci95_low": round(float(low), 6),
-                        "ci95_high": round(float(high), 6),
-                    }
+                    left_values = _metric_values([case_maps[left_name][key] for key in ordered_common_keys], metric_name)
+                    right_values = _metric_values([case_maps[right_name][key] for key in ordered_common_keys], metric_name)
+                    interval = _interval(right_values - left_values)
+                    if interval is not None:
+                        interval["profile_b_minus_profile_a"] = interval.pop("mean")
+                        comparison_row["deltas"][metric_name] = interval
                 paired_profile_comparisons.append(comparison_row)
 
     if common_case_keys:
@@ -2213,16 +2270,7 @@ def build_world_model_comparison(run_summaries: Sequence[Dict[str, object]]) -> 
             }
             for row in full_set_profiles
         ]
-        profiles.sort(
-            key=lambda row: (
-                float(row["mean_risk_fidelity_score"]),
-                float(row["full_horizon_rate"]),
-                -float(row["mean_min_ade_at_5"]),
-                -float(row["mean_ade_m"]),
-                float(row["mean_occupancy_iou"]),
-            ),
-            reverse=True,
-        )
+        profiles.sort(key=_profile_sort_key, reverse=True)
         profile_order = [str(row["name"]) for row in profiles]
 
     behavior_matrix = []
@@ -2297,7 +2345,9 @@ def build_world_model_comparison(run_summaries: Sequence[Dict[str, object]]) -> 
             "case_count": len(common_case_keys) if common_case_keys else (int(profiles[0]["case_count"]) if profiles else 0),
             "common_case_count": len(common_case_keys),
             "comparison_basis": "common_case_intersection" if common_case_keys else "profile_specific_cases",
-            "uncertainty_method": "paired case-level percentile bootstrap" if common_case_keys else "none",
+            "uncertainty_method": "paired cluster-level percentile bootstrap" if common_case_keys else "none",
+            "bootstrap_cluster_key": "scene_token, scene_name, then case_key",
+            "bootstrap_cluster_count": len(cluster_names),
             "bootstrap_seed": bootstrap_seed if common_case_keys else None,
             "bootstrap_replicates": bootstrap_replicates if common_case_keys else 0,
         },
@@ -2334,18 +2384,15 @@ def write_world_model_comparison(comparison: Dict[str, object], output_dir: Path
     ]
     for row in list(comparison.get("profiles") or []):
         lines.append(
-            "| {0} | {1}/{2} ({3:.1%}) | {4:.3f} | {5:.3f} | {6:.3f} | {7:.3f} | {8:.3f} | {9:.3f} | {10:.3f} |".format(
+            "| {0} | {1}/{2} ({3:.1%}) | {4} | {5} | {6} | {7} | {8} | {9} | {10} |".format(
                 row["label"],
                 row["full_horizon_count"],
                 row["case_count"],
                 row["full_horizon_rate"],
-                row["mean_risk_fidelity_score"],
-                row["mean_ade_m"],
-                row["mean_min_ade_at_1"],
-                row["mean_min_ade_at_5"],
-                row["mean_miss_rate_at_5"],
-                row["mean_occupancy_iou"],
-                row["mean_closest_approach_time_error_s"],
+                *[_format_metric(row[name]) for name in [
+                    "mean_risk_fidelity_score", "mean_ade_m", "mean_min_ade_at_1", "mean_min_ade_at_5",
+                    "mean_miss_rate_at_5", "mean_occupancy_iou", "mean_closest_approach_time_error_s",
+                ]],
             )
         )
     lines.extend(
@@ -2361,15 +2408,12 @@ def write_world_model_comparison(comparison: Dict[str, object], output_dir: Path
     )
     for row in list(comparison.get("common_case_summary") or []):
         lines.append(
-            "| {0} | {1} | {2}/{1} ({3:.1%}) | {4:.3f} | {5:.3f} | {6:.3f} | {7:.3f} |".format(
+            "| {0} | {1} | {2}/{1} ({3:.1%}) | {4} | {5} | {6} | {7} |".format(
                 row["label"],
                 row["case_count"],
                 row["full_horizon_count"],
                 row["full_horizon_rate"],
-                row["mean_ade_m"],
-                row["mean_fde_m"],
-                row["mean_risk_fidelity_score"],
-                row["mean_occupancy_iou"],
+                *[_format_metric(row[name]) for name in ["mean_ade_m", "mean_fde_m", "mean_risk_fidelity_score", "mean_occupancy_iou"]],
             )
         )
     lines.extend(
@@ -2387,15 +2431,11 @@ def write_world_model_comparison(comparison: Dict[str, object], output_dir: Path
         ade = dict(dict(row.get("deltas") or {}).get("ade_m") or {})
         risk = dict(dict(row.get("deltas") or {}).get("risk_fidelity_score") or {})
         lines.append(
-            "| {0} | {1} | {2:.3f} [{3:.3f}, {4:.3f}] | {5:.3f} [{6:.3f}, {7:.3f}] |".format(
+            "| {0} | {1} | {2} [{3}, {4}] | {5} [{6}, {7}] |".format(
                 str(row.get("profile_a") or "").replace("_", "-").title(),
                 str(row.get("profile_b") or "").replace("_", "-").title(),
-                float(ade.get("profile_b_minus_profile_a") or 0.0),
-                float(ade.get("ci95_low") or 0.0),
-                float(ade.get("ci95_high") or 0.0),
-                float(risk.get("profile_b_minus_profile_a") or 0.0),
-                float(risk.get("ci95_low") or 0.0),
-                float(risk.get("ci95_high") or 0.0),
+                *[_format_metric(values.get(name)) for values in [ade, risk]
+                  for name in ["profile_b_minus_profile_a", "ci95_low", "ci95_high"]],
             )
         )
     lines.extend(["", "## Challenge Track Matrix", "", "| Track | " + " | ".join(str(row["label"]) for row in list(comparison.get("profiles") or [])) + " |", "| --- | " + " | ".join("---" for _ in list(comparison.get("profiles") or [])) + " |"])
@@ -2414,7 +2454,7 @@ def write_world_model_comparison(comparison: Dict[str, object], output_dir: Path
         )
     (output_dir / "world_model_comparison_summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (output_dir / "world_model_comparison_summary.html").write_text(
-        WORLD_MODEL_COMPARISON_TEMPLATE.render(comparison=comparison),
+        WORLD_MODEL_COMPARISON_TEMPLATE.render(comparison=comparison, metric=_format_metric),
         encoding="utf-8",
     )
 

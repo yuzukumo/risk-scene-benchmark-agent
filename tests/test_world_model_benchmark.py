@@ -1,10 +1,14 @@
 import json
+import copy
 import sqlite3
 import tempfile
 import unittest
 from unittest import mock
 from pathlib import Path
+from nuscenes.utils.splits import create_splits_scenes
 
+from nusc_scene_agent.artifact_manifest import build_artifact_entry, verify_artifact_manifest, write_artifact_manifest
+from nusc_scene_agent.forecast_validation import audit_forecast_generalization
 from nusc_scene_agent.perception_benchmark import generate_perception_benchmark_from_scenario_config
 from nusc_scene_agent.world_model_benchmark import (
     adapt_and_evaluate_nuscenes_forecast_predictions,
@@ -142,6 +146,40 @@ class WorldModelBenchmarkTest(unittest.TestCase):
         generate_world_model_benchmark_from_perception_benchmark(perception_benchmark_path, db_path, world_model_benchmark_path)
         return world_model_benchmark_path
 
+    def test_validation_audit_excludes_entire_development_scenes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            benchmark_path = self._create_world_model_benchmark(root)
+            benchmark = json.loads(benchmark_path.read_text())
+            cases = []
+            for index, name in enumerate(create_splits_scenes()["val"][:2]):
+                case = copy.deepcopy(benchmark["cases"][0])
+                case.update(benchmark_group=f"case_{index}", scene_token=f"scene_{index}", scene_name=name)
+                cases.append(case)
+            benchmark["cases"] = cases
+            benchmark_path.write_text(json.dumps(benchmark))
+            predictions = root / "predictions.json"
+            generate_proxy_world_model_predictions(benchmark_path, predictions, "oracle_rollout")
+            study = root / "study"
+            for directory in ["contextvae", "nuscenes_baselines/cv_heading", "nuscenes_baselines/physics_oracle"]:
+                target = study / directory
+                target.mkdir(parents=True)
+                (target / "world_model_metrics.json").write_text(json.dumps({"predictions_path": str(predictions)}))
+            (study / "contextvae_study_manifest.json").write_text(json.dumps({
+                "preparation": {"subset_benchmark_path": str(benchmark_path)},
+            }))
+            write_artifact_manifest(study, [build_artifact_entry(predictions, "input", "forecast")])
+            development = root / "development.json"
+            development.write_text(json.dumps({"cases": [{"scene_token": "scene_0", "instance_token": "another_actor"}]}))
+            output = root / "audit"
+            result = audit_forecast_generalization(study, [development], output)
+            self.assertEqual(result["case_count"], 1)
+            self.assertEqual(result["excluded_case_count"], 1)
+            self.assertEqual(result["shared_development_scene_count"], 0)
+            retained = json.loads(Path(result["benchmark_path"]).read_text())["cases"]
+            self.assertEqual(retained[0]["scene_token"], "scene_1")
+            self.assertTrue(verify_artifact_manifest(output / "artifact_manifest.json")["valid"])
+
     def test_generate_world_model_benchmark_from_perception_benchmark(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -184,6 +222,27 @@ class WorldModelBenchmarkTest(unittest.TestCase):
             self.assertTrue((output_dir / "world_model_metrics_summary.md").exists())
             self.assertTrue((output_dir / "world_model_metrics_summary.html").exists())
             self.assertTrue((output_dir / "world_model_case_metrics.csv").exists())
+
+    def test_missing_predictions_remain_missing_in_exported_error_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            benchmark = self._create_world_model_benchmark(root)
+            predictions = root / "empty.json"
+            predictions.write_text(json.dumps({"predictions": []}))
+            output = root / "evaluation"
+            result = evaluate_world_model_predictions(benchmark, predictions, output)
+            self.assertIsNone(result["overview"]["mean_ade_m"])
+            self.assertIsNone(result["overview"]["mean_fde_m"])
+            self.assertIsNone(result["forecast_metrics"]["mean_min_ade_at_5"])
+            self.assertEqual(result["forecast_metrics"]["mean_miss_rate_at_5"], 1.0)
+            comparison = compare_world_model_evaluations([output], root / "comparison")
+            self.assertEqual(comparison["case_count"], 1)
+            exported = json.loads((root / "comparison/world_model_comparison.json").read_text())
+            self.assertIsNone(exported["profiles"][0]["mean_ade_m"])
+            for path in [output / "world_model_metrics_summary.md", output / "world_model_metrics_summary.html",
+                         root / "comparison/world_model_comparison_summary.md",
+                         root / "comparison/world_model_comparison_summary.html"]:
+                self.assertIn("n/a", path.read_text())
 
     def test_adapt_compact_world_model_predictions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

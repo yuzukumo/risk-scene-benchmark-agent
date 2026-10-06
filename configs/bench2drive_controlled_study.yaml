@@ -1,0 +1,59 @@
+experiment:
+  id: bench2drive_controlled_study_v2
+  type: bench2drive_study
+  output: outputs/bench2drive_controlled_study_v2
+
+bench2drive_study:
+  output: outputs/bench2drive_controlled_study_v2
+  manifest: artifacts/bench2drive/vision_e2e_manifest_tensor_160.jsonl
+  case_library: outputs/trainval_case_library_v1/case_library_enriched.json
+  seeds: [7, 17, 27]
+  world_size: 4
+  device: cuda:0
+  training:
+    epochs: 24
+    batch_size: 64
+    learning_rate: 0.0001
+    weight_decay: 0.0001
+    image_size: 160
+    model_size: research
+    architecture: trajectory_transformer
+    camera_pooling: transformer
+    trajectory_modes: 4
+    trajectory_selection: expected
+    trajectory_temperature: 0.5
+    dropout: 0.05
+    num_workers: 4
+    prefetch_factor: 4
+    precision: fp16
+    selection_metric: risk_aware
+    brake_loss_weight: 0.25
+    brake_positive_weight: 1.25
+    risk_sample_weight: 1.25
+    lateral_loss_weight: 2.0
+    turn_sample_weight: 2.0
+    selected_waypoint_loss_weight: 0.5
+    mode_classification_weight: 0.05
+  arms:
+    - name: baseline
+    - name: geometric_supervision
+      training:
+        displacement_loss_weight: 0.1
+        endpoint_loss_weight: 0.025
+        path_length_loss_weight: 0.025
+    - name: route_only
+      training:
+        input_mode: route_only
+    - name: spatial_4x4
+      training:
+        spatial_pool_size: 4
+    - name: random_half
+      fraction: 0.5
+    - name: risk_prior_half
+      fraction: 0.5
+      sampling: risk_prior
+  comparisons:
+    - [baseline, geometric_supervision]
+    - [route_only, baseline]
+    - [baseline, spatial_4x4]
+    - [random_half, risk_prior_half]

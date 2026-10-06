@@ -81,16 +81,9 @@ def run_nuplan_closed_loop_sweep(
         study_results.append(_load_completed_study(study, manifest))
 
     payload = build_nuplan_closed_loop_sweep_summary(study_results, output_dir=output_dir)
+    payload["artifact_manifest"] = {"path": str(output_dir / "artifact_manifest.json")}
     _write_sweep_outputs(payload, output_dir)
-    artifact_manifest = _write_sweep_artifact_manifest(output_dir, study_results)
-    payload["artifact_manifest"] = {
-        "path": str(output_dir / "artifact_manifest.json"),
-        "overview": artifact_manifest.get("overview", {}),
-    }
-    (output_dir / "nuplan_closed_loop_sweep_summary.json").write_text(
-        json.dumps(payload, indent=2),
-        encoding="utf-8",
-    )
+    _write_sweep_artifact_manifest(output_dir, study_results)
     return payload
 
 

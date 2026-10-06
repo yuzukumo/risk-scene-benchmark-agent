@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import hashlib
 import json
 import math
 import pickle
@@ -14,11 +15,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from urllib.request import Request, urlopen
 
 import numpy as np
-from nuscenes.map_expansion.map_api import NuScenesMap
+from nuscenes.map_expansion.map_api import NuScenesMap, NuScenesMapExplorer
 from nuscenes.nuscenes import NuScenes
 from pyquaternion import Quaternion
 
 from nusc_scene_agent.data_utils import DEFAULT_DATAROOT
+from nusc_scene_agent.artifact_manifest import build_artifact_entry, collect_runtime_provenance, write_artifact_manifest
 from nusc_scene_agent.world_model_benchmark import (
     adapt_and_evaluate_nuscenes_forecast_predictions,
     compare_world_model_evaluations,
@@ -114,6 +116,17 @@ def _next_samples(nusc: NuScenes, sample_token: str, count: int) -> List[Dict[st
     return rows
 
 
+class _CompatibleMapExplorer(NuScenesMapExplorer):
+    @staticmethod
+    def mask_for_lines(lines: object, mask: np.ndarray) -> np.ndarray:
+        # The SDK still iterates MultiLineString directly, which Shapely 2 removed.
+        parts = lines.geoms if lines.geom_type == "MultiLineString" else [lines]
+        for line in parts:
+            if not line.is_empty:
+                NuScenesMapExplorer.mask_for_lines(line, mask)
+        return mask
+
+
 def _semantic_map_patch(
     dataroot: Path,
     map_name: str,
@@ -124,6 +137,7 @@ def _semantic_map_patch(
     map_scale: int,
 ) -> Tuple[np.ndarray, np.ndarray]:
     scene_map = NuScenesMap(dataroot=str(dataroot), map_name=map_name)
+    scene_map.explorer = _CompatibleMapExplorer(scene_map)
     x_min = int(math.floor(x_min - 300.0))
     x_max = int(math.ceil(x_max + 300.0))
     y_min = int(math.floor(y_min - 300.0))
@@ -255,6 +269,8 @@ def _prepare_case_records(
         return None
 
     target_track = {frame_idx: (x_global, y_global, heading) for frame_idx, x_global, y_global, heading, _ in records[instance_token]}
+    if set(target_track) != set(range(len(samples))):
+        return None
     transform = target_track.get(0)
     if transform is None:
         return None
@@ -334,8 +350,12 @@ def prepare_contextvae_world_model_dataset(
     benchmark = _load_json(benchmark_path)
     nusc = NuScenes(version=version, dataroot=str(dataroot), verbose=False)
     output_dir = output_dir.resolve()
-    val_root = output_dir / "val"
-    map_root = output_dir / "map"
+    preparation_key = hashlib.sha256(
+        Path(benchmark_path).read_bytes() + Path(__file__).read_bytes()
+        + json.dumps([version, ob_horizon, pred_horizon, map_scale]).encode()
+    ).hexdigest()[:16]
+    val_root = output_dir / "prepared" / preparation_key / "val"
+    map_root = output_dir / "prepared" / preparation_key / "map"
     val_root.mkdir(parents=True, exist_ok=True)
     map_root.mkdir(parents=True, exist_ok=True)
 
@@ -343,8 +363,14 @@ def prepare_contextvae_world_model_dataset(
     skipped_cases: List[Dict[str, object]] = []
     compatible_cases: List[Dict[str, object]] = []
     map_bounds: Dict[str, Dict[str, float]] = {}
+    seen_forecast_keys = set()
 
     for case in list(benchmark.get("cases") or []):
+        forecast_key = _case_file_name(case)
+        if forecast_key in seen_forecast_keys:
+            skipped_cases.append({"reference_case_key": str(case.get("reference_case_key") or ""),
+                                  "reason": "duplicate_instance_anchor", "forecast_key": forecast_key})
+            continue
         prepared = _prepare_case_records(
             nusc=nusc,
             case=dict(case),
@@ -358,10 +384,12 @@ def prepare_contextvae_world_model_dataset(
                     "benchmark_group": str(case.get("benchmark_group") or ""),
                     "instance_token": str(case.get("instance_token") or ""),
                     "rollout_anchor_sample_token": str(case.get("rollout_anchor_sample_token") or case.get("anchor_sample_token") or ""),
-                    "reason": "insufficient_context_or_future",
+                    "reason": "insufficient_or_discontinuous_actor_context_or_future",
                 }
             )
             continue
+
+        seen_forecast_keys.add(forecast_key)
 
         scene_dir = val_root / prepared["scene_name"]
         scene_dir.mkdir(parents=True, exist_ok=True)
@@ -446,6 +474,9 @@ def prepare_contextvae_world_model_dataset(
             "ob_horizon": ob_horizon,
             "pred_horizon": pred_horizon,
             "map_scale": map_scale,
+            "preparation_key": preparation_key,
+            "val_root": str(val_root),
+            "map_root": str(map_root),
         },
         "cases": [
             {
@@ -542,8 +573,8 @@ def export_contextvae_nuscenes_forecasts(
 
     torch_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     dataset = data_module.Dataloader(
-        [str((dataset_dir / "val").resolve())],
-        map_dir=str((dataset_dir / "map").resolve()),
+        [str(Path(manifest.get("metadata", {}).get("val_root") or dataset_dir / "val").resolve())],
+        map_dir=str(Path(manifest.get("metadata", {}).get("map_root") or dataset_dir / "map").resolve()),
         batch_first=False,
         device="cpu",
         shuffle=False,
@@ -711,6 +742,11 @@ def run_contextvae_world_model_study(
         output_dir=output_dir / "comparison",
     )
     summary = {
+        "schema": "contextvae_world_model_study_v1",
+        "provenance": collect_runtime_provenance(),
+        "protocol": {"benchmark": str(benchmark_path), "checkpoint": str(checkpoint_path),
+                     "seed": seed, "mode_count": mode_count, "clustering_samples": clustering_samples,
+                     "evaluation_subset": "unique actor-anchor pairs with continuous observations"},
         "preparation": prep_metadata,
         "export": export_metadata,
         "evaluation": evaluation,
@@ -718,4 +754,9 @@ def run_contextvae_world_model_study(
         "output_dir": str(output_dir),
     }
     _write_json(output_dir / "contextvae_study_manifest.json", summary)
+    write_artifact_manifest(output_dir, [
+        build_artifact_entry(path, "result", "contextvae_study", output_dir)
+        for path in [output_dir / "contextvae_study_manifest.json", prediction_path, subset_benchmark_path,
+                     output_dir / "comparison/world_model_comparison.json", benchmark_path, checkpoint_path]
+    ])
     return summary

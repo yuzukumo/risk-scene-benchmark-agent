@@ -33,13 +33,21 @@ from nusc_scene_agent.geometry import normalize_angle
 DEFAULT_BENCH2DRIVE_CLOSED_LOOP_OUTPUT = Path("outputs/bench2drive_vision_closed_loop_final")
 BENCH2DRIVE_CLOSED_LOOP_SCHEMA = "bench2drive_vision_closed_loop_v1"
 BENCH2DRIVE_CLOSED_LOOP_COMPARISON_SCHEMA = "bench2drive_vision_closed_loop_comparison_v1"
+REPLAY_PROTOCOL = {
+    "version": "logged_sensor_replay_v2",
+    "observations": "fixed logged cameras and navigation; no sensor feedback",
+    "waypoint_reference": "logged ego pose",
+    "reference_route": "observed poses within the evaluated time window",
+    "time_alignment": "initial pose followed by aligned next-frame states",
+    "score": "custom tracking diagnostic, not an official driving score",
+}
 
 CLOSED_LOOP_COMPARISON_METRICS = (
-    ("closed_loop_ade_m", "Closed-loop ADE", "lower"),
-    ("closed_loop_fde_m", "Closed-loop FDE", "lower"),
+    ("closed_loop_ade_m", "Replay ADE", "lower"),
+    ("closed_loop_fde_m", "Replay FDE", "lower"),
     ("mean_lateral_error_m", "Mean lateral error", "lower"),
     ("route_completion", "Route completion", "higher"),
-    ("closed_loop_score", "Closed-loop score", "higher"),
+    ("closed_loop_score", "Custom tracking score", "higher"),
 )
 
 MAX_STEER_RAD = 0.65
@@ -51,6 +59,7 @@ MAX_BRAKE_MPS2 = 5.0
 @dataclass(frozen=True)
 class ClosedLoopControlConfig:
     dt_s: float = 0.5
+    source_frame_dt_s: float = 0.1
     horizon_s: float = 10.0
     target_speed_mps: float = 5.5
     min_target_speed_mps: float = 1.0
@@ -141,6 +150,7 @@ def run_bench2drive_vision_closed_loop(
         image_size=image_size,
         device=str(target_device),
         config=config,
+        case_selection=case_selection,
         case_reports=case_reports,
         comparison=comparison,
         render_case_media=render_case_media,
@@ -148,6 +158,7 @@ def run_bench2drive_vision_closed_loop(
     )
     return {
         "schema": BENCH2DRIVE_CLOSED_LOOP_SCHEMA,
+        "evaluation_protocol": dict(REPLAY_PROTOCOL),
         "output_dir": str(output_dir),
         "manifest_path": str(manifest_path),
         "checkpoint_path": str(checkpoint_path),
@@ -178,6 +189,10 @@ def compare_bench2drive_closed_loop_reports(
     candidate_path = Path(candidate_report_path)
     baseline = _read_closed_loop_report(baseline_path)
     candidate = _read_closed_loop_report(candidate_path)
+    if baseline.get("evaluation_protocol") != candidate.get("evaluation_protocol"):
+        raise ValueError("Paired reports must use the same evaluation protocol; rerun legacy reports.")
+    if baseline.get("control_config") != candidate.get("control_config"):
+        raise ValueError("Paired reports must use the same control configuration.")
     baseline_cases = _index_closed_loop_cases(baseline)
     candidate_cases = _index_closed_loop_cases(candidate)
     baseline_ids = set(baseline_cases)
@@ -383,7 +398,7 @@ def _render_paired_comparison_markdown(payload: Mapping[str, Any]) -> str:
     baseline = dict(payload.get("baseline") or {})
     candidate = dict(payload.get("candidate") or {})
     lines = [
-        "# Bench2Drive Closed-Loop Paired Comparison",
+        "# Bench2Drive Logged-Sensor Replay Comparison",
         "",
         f"- Baseline: `{baseline.get('label', '')}`",
         f"- Candidate: `{candidate.get('label', '')}`",
@@ -434,12 +449,12 @@ def _render_paired_comparison_figure(rows: Sequence[Mapping[str, Any]], output_p
     ax.set_yticks(positions, labels)
     ax.invert_yaxis()
     ax.set_xlabel("Candidate improvement over baseline (%)")
-    ax.set_title("Bench2Drive paired closed-loop comparison")
+    ax.set_title("Bench2Drive logged-sensor replay diagnostic")
     ax.grid(axis="x", alpha=0.22)
     for position, value in zip(positions, values):
-        offset = 0.7 if value >= 0.0 else -0.7
-        alignment = "left" if value >= 0.0 else "right"
-        ax.text(value + offset, position, f"{value:+.1f}%", va="center", ha=alignment, fontsize=8)
+        ax.annotate(f"{value:+.1f}%", (value, position), xytext=(0, -13),
+                    textcoords="offset points", va="top", ha="center", fontsize=8)
+    ax.margins(y=0.18)
     fig.tight_layout()
     fig.savefig(output_path, bbox_inches="tight")
     plt.close(fig)
@@ -480,7 +495,17 @@ def _select_closed_loop_cases(
     elif str(case_selection) == "stress":
         candidates.sort(key=lambda clip_rows: _stress_selection_priority(clip_rows), reverse=True)
     else:
-        candidates.sort(key=lambda clip_rows: _balanced_selection_priority(clip_rows), reverse=True)
+        by_family: Dict[str, List[List[Dict[str, Any]]]] = {}
+        for clip_rows in candidates:
+            by_family.setdefault(str(clip_rows[0].get("scenario_family") or "unknown"), []).append(clip_rows)
+        for family_rows in by_family.values():
+            family_rows.sort(key=_balanced_selection_priority, reverse=True)
+        candidates = [
+            family_rows[index]
+            for index in range(max((len(items) for items in by_family.values()), default=0))
+            for _, family_rows in sorted(by_family.items())
+            if index < len(family_rows)
+        ]
     if max_cases > 0:
         candidates = candidates[: int(max_cases)]
     return candidates
@@ -525,6 +550,19 @@ def _run_closed_loop_case(
     config: ClosedLoopControlConfig,
 ) -> Dict[str, Any]:
     first = dict(case_rows[0])
+    if config.dt_s <= 0.0 or config.source_frame_dt_s <= 0.0 or config.horizon_s <= 0.0:
+        raise ValueError("Replay time intervals and horizon must be positive.")
+    times = [
+        (int(row["frame_id"]) - int(first["frame_id"])) * config.source_frame_dt_s
+        if "frame_id" in row and "frame_id" in first else index * config.dt_s
+        for index, row in enumerate(case_rows)
+    ]
+    if any(end <= start for start, end in zip(times, times[1:])):
+        raise ValueError("Replay frames must have strictly increasing timestamps.")
+    case_rows = [row for row, timestamp in zip(case_rows, times) if timestamp <= config.horizon_s + 1e-8]
+    times = times[:len(case_rows)]
+    if len(case_rows) < 2:
+        raise ValueError("Replay requires at least two poses inside the horizon.")
     initial_speed = float(dict(first.get("ego_state") or {}).get("speed") or 0.0)
     state = {
         "x": 0.0,
@@ -534,12 +572,12 @@ def _run_closed_loop_case(
         "acceleration_mps2": 0.0,
     }
     route_global = _logged_route_from_rows(case_rows)
-    closed_loop_states = []
-    logged_states = []
+    closed_loop_states = [{"step": 0, "t_s": 0.0, **state, "yaw_rate_rps": 0.0, "jerk_mps3": 0.0}]
+    logged_states = [{"t_s": 0.0, **_logged_state_from_row(first, first)}]
     prediction_rows = []
     dataset = _Bench2DriveVisionDataset(case_rows, image_size=int(image_size))
     previous_accel = 0.0
-    max_steps = min(len(case_rows), max(int(config.horizon_s / max(config.dt_s, 1e-6)), 1))
+    max_steps = len(case_rows) - 1
     samples = [dataset[step_idx] for step_idx in range(max_steps)]
     inference_batch = {
         "images": torch.stack([sample["images"] for sample in samples], dim=0),
@@ -569,18 +607,23 @@ def _run_closed_loop_case(
                 config,
                 predicted_control=pred_control,
                 brake_probability=brake_prob,
+                waypoint_reference_state=_logged_state_from_row(row, first),
             )
-            new_state = _integrate_closed_loop_state(state, control, dt_s=config.dt_s, config=config)
-            yaw_rate = normalize_angle(new_state["yaw"] - state["yaw"]) / max(config.dt_s, 1e-6)
-            jerk = (new_state["acceleration_mps2"] - previous_accel) / max(config.dt_s, 1e-6)
+            dt_s = times[step_idx + 1] - times[step_idx]
+            substeps = max(1, math.ceil(dt_s / config.dt_s))
+            new_state = state
+            for _ in range(substeps):
+                new_state = _integrate_closed_loop_state(new_state, control, dt_s=dt_s / substeps, config=config)
+            yaw_rate = normalize_angle(new_state["yaw"] - state["yaw"]) / dt_s
+            jerk = (new_state["acceleration_mps2"] - previous_accel) / dt_s
             previous_accel = new_state["acceleration_mps2"]
             state = new_state
-            logged = _logged_state_from_row(row, first)
+            logged = {"t_s": times[step_idx + 1], **_logged_state_from_row(case_rows[step_idx + 1], first)}
             logged_states.append(logged)
             closed_loop_states.append(
                 {
-                    "step": step_idx,
-                    "t_s": step_idx * config.dt_s,
+                    "step": step_idx + 1,
+                    "t_s": times[step_idx + 1],
                     **state,
                     "yaw_rate_rps": yaw_rate,
                     "jerk_mps3": jerk,
@@ -609,6 +652,7 @@ def _run_closed_loop_case(
     )
     return {
         "schema": "bench2drive_vision_closed_loop_case_v1",
+        "evaluation_protocol": dict(REPLAY_PROTOCOL),
         "case_id": _safe_case_id(first),
         "clip_name": str(first.get("clip_name") or ""),
         "scenario_family": str(first.get("scenario_family") or ""),
@@ -626,22 +670,7 @@ def _logged_route_from_rows(rows: Sequence[Mapping[str, Any]]) -> List[Dict[str,
     if not rows:
         return []
     first = dict(rows[0])
-    route = []
-    for row in rows:
-        route.append(_logged_state_from_row(row, first))
-    future = first.get("future_waypoints_ego") or []
-    for idx, waypoint in enumerate(future):
-        x, y = _bench2drive_local_to_control_xy(float(waypoint[0]), float(waypoint[1]))
-        route.append(
-            {
-                "step": len(route) + idx,
-                "x": x,
-                "y": y,
-                "yaw": 0.0,
-                "speed_mps": 0.0,
-            }
-        )
-    return route
+    return [_logged_state_from_row(row, first) for row in rows]
 
 
 def _logged_state_from_row(row: Mapping[str, Any], first_row: Mapping[str, Any]) -> Dict[str, float]:
@@ -704,10 +733,11 @@ def _control_from_predicted_waypoints(
     *,
     predicted_control: Optional[Sequence[float]] = None,
     brake_probability: float = 0.0,
+    waypoint_reference_state: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, float]:
     if not pred_waypoints:
         return {"steer": 0.0, "throttle": 0.0, "brake": 1.0, "target_speed_mps": 0.0}
-    route = _predicted_waypoints_to_route(state, pred_waypoints)
+    route = _predicted_waypoints_to_route(waypoint_reference_state or state, pred_waypoints)
     if len(route) < 2 or _polyline_length(route) < 0.5:
         return {"steer": 0.0, "throttle": 0.0, "brake": 1.0, "target_speed_mps": 0.0}
     controller_config = PurePursuitConfig(
@@ -1003,7 +1033,7 @@ def _render_case_rollout_figure(report: Mapping[str, Any], output_path: Path) ->
     if logged:
         ax.plot([p["x"] for p in logged], [p["y"] for p in logged], color="#3b6ea8", lw=1.8, label="logged ego")
     if rollout:
-        ax.plot([p["x"] for p in rollout], [p["y"] for p in rollout], color="#c45c2c", lw=1.8, label="closed-loop model")
+        ax.plot([p["x"] for p in rollout], [p["y"] for p in rollout], color="#c45c2c", lw=1.8, label="model replay")
         ax.scatter([rollout[0]["x"]], [rollout[0]["y"]], s=32, color="#2a9d8f", label="start")
     ax.set_title(f"{report.get('case_id', '')}")
     ax.set_aspect("equal", adjustable="datalim")
@@ -1014,9 +1044,9 @@ def _render_case_rollout_figure(report: Mapping[str, Any], output_path: Path) ->
     if rollout:
         steps = [row["step"] for row in rollout]
         ax.plot(steps, [row["speed_mps"] for row in rollout], label="speed")
-        ax.plot(steps, [row["brake_probability"] for row in rollout], label="brake probability")
-        ax.plot(steps, [row["steer"] for row in rollout], label="steer")
-    ax.set_title("Closed-loop signals")
+        ax.plot(steps, [row.get("brake_probability", float("nan")) for row in rollout], label="brake probability")
+        ax.plot(steps, [row.get("steer", float("nan")) for row in rollout], label="steer")
+    ax.set_title("Logged-sensor replay signals")
     ax.set_xlabel("step")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=8)
@@ -1152,12 +1182,15 @@ def _write_closed_loop_outputs(
     device: str,
     config: ClosedLoopControlConfig,
     case_reports: Sequence[Mapping[str, Any]],
+    case_selection: str,
     comparison: Mapping[str, Any],
     render_case_media: bool,
     runtime_s: float,
 ) -> None:
     payload = {
         "schema": BENCH2DRIVE_CLOSED_LOOP_SCHEMA,
+        "evaluation_protocol": dict(REPLAY_PROTOCOL),
+        "case_selection": case_selection,
         "manifest_path": str(manifest_path),
         "checkpoint_path": str(checkpoint_path),
         "output_dir": str(output_dir),
@@ -1208,7 +1241,9 @@ def _render_closed_loop_markdown(payload: Mapping[str, Any]) -> str:
     comparison = dict(payload.get("comparison") or {})
     metrics = dict(comparison.get("metrics") or {})
     lines = [
-        "# Bench2Drive Vision Closed-Loop Evaluation",
+        "# Bench2Drive Logged-Sensor Replay Evaluation",
+        "",
+        "Images and navigation remain fixed to the log. The tracking score is a custom diagnostic.",
         "",
         f"- Cases: `{payload.get('case_count', 0)}`",
         f"- Split: `{payload.get('split', '')}`",
@@ -1226,7 +1261,7 @@ def _render_closed_loop_markdown(payload: Mapping[str, Any]) -> str:
         "mean_closed_loop_score",
     ]:
         lines.append(f"| `{key}` | `{_format_float(metrics.get(key))}` |")
-    lines.extend(["", "| Case | Scenario | ADE | Completion | Closed-Loop Score | Media |", "| --- | --- | ---: | ---: | ---: | --- |"])
+    lines.extend(["", "| Case | Scenario | ADE | Completion | Custom Tracking Score | Media |", "| --- | --- | ---: | ---: | ---: | --- |"])
     for row in payload.get("cases", []):
         lines.append(
             "| `{0}` | `{1}` | `{2}` | `{3}` | `{4}` | `{5}` |".format(
@@ -1250,11 +1285,11 @@ def _render_overview_figure(rows: Sequence[Mapping[str, Any]], output_path: Path
     score = [float(row.get("closed_loop_score") or 0.0) for row in rows]
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), dpi=160)
     axes[0].barh(labels, ade, color="#3b6ea8")
-    axes[0].set_title("Closed-loop ADE")
+    axes[0].set_title("Replay ADE")
     axes[0].set_xlabel("meters")
     axes[0].grid(axis="x", alpha=0.25)
     axes[1].barh(labels, score, color="#c45c2c")
-    axes[1].set_title("Closed-loop score")
+    axes[1].set_title("Custom tracking score")
     axes[1].set_xlim(0.0, 1.0)
     axes[1].grid(axis="x", alpha=0.25)
     fig.tight_layout()

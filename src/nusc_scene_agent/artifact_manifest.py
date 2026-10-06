@@ -130,6 +130,26 @@ def _artifact_format(path: Path) -> str:
     return "unknown"
 
 
+def verify_artifact_manifest(manifest_path: Path) -> Dict[str, Any]:
+    manifest_path = Path(manifest_path)
+    payload = json.loads(manifest_path.read_text())
+    checked, failures = 0, []
+    for entry in payload.get("artifacts", []):
+        path = Path(str(entry["path"]))
+        if not path.is_absolute():
+            rooted = manifest_path.parent / path
+            path = rooted if rooted.exists() or not path.exists() else path
+        if not entry.get("exists"):
+            continue
+        if not path.exists():
+            failures.append({"path": str(path), "reason": "missing"})
+        elif path.is_file() and entry.get("sha256"):
+            checked += 1
+            if path.stat().st_size != entry.get("size_bytes") or _sha256_file(path) != entry["sha256"]:
+                failures.append({"path": str(path), "reason": "content_mismatch"})
+    return {"manifest": str(manifest_path), "checked_files": checked, "valid": not failures, "failures": failures}
+
+
 def _render_manifest_markdown(payload: Mapping[str, Any]) -> str:
     overview = dict(payload.get("overview") or {})
     lines: List[str] = [

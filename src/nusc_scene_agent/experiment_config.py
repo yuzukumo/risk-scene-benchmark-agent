@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import yaml
 
+from nusc_scene_agent.artifact_manifest import build_artifact_entry
 from nusc_scene_agent.benchmark_exports import write_benchmark_exports
 from nusc_scene_agent.benchmark_metrics import build_benchmark_metrics, write_benchmark_metrics
 from nusc_scene_agent.bev_occupancy_benchmark import (
@@ -26,8 +27,14 @@ from nusc_scene_agent.carla_vision_closed_loop import run_carla_vision_closed_lo
 from nusc_scene_agent.case_library import build_case_library, write_case_library
 from nusc_scene_agent.case_library_enrichment import enrich_case_library
 from nusc_scene_agent.dataset_backends import inspect_dataset_backends, write_dataset_backend_inventory
-from nusc_scene_agent.failure_mining import mine_model_failures
-from nusc_scene_agent.failure_aware_reranking import run_failure_aware_reranking_eval
+from nusc_scene_agent.failure_mining import DEFAULT_FAILURE_MINING_OUTPUT, mine_model_failures
+from nusc_scene_agent.failure_aware_reranking import DEFAULT_FAILURE_AWARE_RERANKING_OUTPUT, DEFAULT_FAILURE_UPDATE_QUERIES, run_failure_aware_reranking_eval
+from nusc_scene_agent.learned_retrieval import (
+    DEFAULT_LEARNED_RETRIEVER_CHECKPOINT,
+    DEFAULT_LARGE_LEARNED_RETRIEVER_OUTPUT,
+    LearnedRetrieverConfig,
+    train_weakly_supervised_scene_retriever,
+)
 from nusc_scene_agent.llm_client import (
     DEFAULT_TIMEOUT_S,
     LLMConfig,
@@ -58,12 +65,31 @@ DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "gemma4:latest"
 
 
-def run_experiment_config(config_path: Path) -> Dict[str, Any]:
+def run_experiment_config(config_path: Path, *, reuse_case_library: bool = False) -> Dict[str, Any]:
     config_path = Path(config_path)
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     experiment = dict(config.get("experiment") or {})
     experiment_id = str(experiment.get("id") or config_path.stem)
     experiment_type = str(experiment.get("type") or "")
+    runtime_overrides = {}
+    if reuse_case_library:
+        if experiment_type != "full_benchmark_suite":
+            raise ValueError("Case-library reuse is supported only for a full benchmark suite.")
+        suite = config.setdefault("full_benchmark_suite", {})
+        risk = config.setdefault("risk_benchmark_suite", {})
+        generation = dict(config.get("case_library_generation") or {})
+        library = Path(str(risk.get("case_library") or Path(str(generation.get("output") or DEFAULT_TRAINVAL_CASE_LIBRARY_OUTPUT))
+                           / ("case_library_enriched.json" if generation.get("enrich", True) else "case_library.json")))
+        if not library.is_file():
+            raise FileNotFoundError(f"Validated case library is unavailable: {library}")
+        entries = json.loads(library.read_text())
+        if not isinstance(entries, list) or not any(
+            isinstance(entry, Mapping) and entry.get("passed") is True for entry in entries
+        ):
+            raise ValueError("Case-library reuse requires existing validated cases.")
+        suite.setdefault("stages", {})["case_library_generation"] = False
+        risk["case_library"] = str(library)
+        runtime_overrides["reused_case_library"] = build_artifact_entry(library, "input", "validated_case_library").to_dict()
 
     if experiment_type == "nuplan_replay_study":
         result = _run_nuplan_replay_experiment(config)
@@ -79,6 +105,19 @@ def run_experiment_config(config_path: Path) -> Dict[str, Any]:
         result = _run_carla_semantic_demo_mining_experiment(config)
     elif experiment_type == "bench2drive_vision_closed_loop":
         result = _run_bench2drive_vision_closed_loop_experiment(config)
+    elif experiment_type == "bench2drive_study":
+        from nusc_scene_agent.bench2drive_study import run_bench2drive_study
+        result = run_bench2drive_study(dict(config.get("bench2drive_study") or {}))
+    elif experiment_type == "carla_fixed_evaluation":
+        from nusc_scene_agent.carla_fixed_evaluation import run_fixed_carla_evaluation
+        result = run_fixed_carla_evaluation(dict(config.get("carla_fixed_evaluation") or {}))
+    elif experiment_type == "risk_case_expansion":
+        from nusc_scene_agent.risk_case_expansion import expand_risk_cases
+        stage = dict(config.get("risk_case_expansion") or {})
+        result = expand_risk_cases(Path(stage["db"]), Path(stage["output"]),
+                                   per_family=int(stage.get("per_family", 30)), candidate_limit=int(stage.get("candidate_limit", 180)),
+                                   scene_split=str(stage.get("scene_split", "all")),
+                                   reuse_validated=bool(stage.get("reuse_validated", False)))
     elif experiment_type == "full_benchmark_suite":
         result = _run_full_benchmark_suite_experiment(config, config_path)
     elif experiment_type == "case_library_generation":
@@ -91,6 +130,12 @@ def run_experiment_config(config_path: Path) -> Dict[str, Any]:
         result = _run_failure_mining_experiment(config)
     elif experiment_type == "failure_aware_reranking":
         result = _run_failure_aware_reranking_experiment(config)
+    elif experiment_type == "learned_retriever_training":
+        result = _run_learned_retriever_training_experiment(config)
+    elif experiment_type == "contextvae_world_model_study":
+        result = _run_contextvae_experiment(config)
+    elif experiment_type == "forecast_validation_study":
+        result = _run_forecast_validation_experiment(config)
     elif experiment_type == "catalog_export":
         result = _run_catalog_export_experiment(config)
     elif experiment_type == "result_registry":
@@ -103,6 +148,7 @@ def run_experiment_config(config_path: Path) -> Dict[str, Any]:
         "experiment_id": experiment_id,
         "experiment_type": experiment_type,
         "config_path": str(config_path),
+        "runtime_overrides": runtime_overrides,
         "result": result,
     }
     output_path = _experiment_result_path(config, config_path)
@@ -279,7 +325,9 @@ def _run_carla_vision_closed_loop_experiment(config: Mapping[str, Any]) -> Dict[
         device=str(stage.get("device") or ""),
         auto_launch=bool(stage.get("auto_launch", False)),
         cuda_visible_devices=str(stage.get("cuda_visible_devices") or ""),
+        graphics_adapter=int(stage.get("graphics_adapter", -1)),
         traffic_manager_port=int(stage.get("traffic_manager_port") or 8000),
+        seed=int(stage.get("seed", 7)),
         launch_timeout_s=float(stage.get("launch_timeout_s") if stage.get("launch_timeout_s") is not None else 90.0),
         rpc_timeout_s=float(stage.get("rpc_timeout_s") if stage.get("rpc_timeout_s") is not None else 30.0),
         keep_server=bool(stage.get("keep_server", False)),
@@ -496,6 +544,7 @@ def _run_full_benchmark_suite_experiment(config: Mapping[str, Any], config_path:
     output_dir.mkdir(parents=True, exist_ok=True)
     stage_results: Dict[str, Any] = {}
     stage_result_paths: Dict[str, str] = {}
+    (output_dir / "resolved_config.yaml").write_text(yaml.safe_dump(dict(config), sort_keys=False), encoding="utf-8")
 
     if _stage_enabled(suite, "case_library_generation", default=bool(config.get("case_library_generation"))):
         stage_config = _merged_stage_config(config, suite, "case_library_generation")
@@ -567,11 +616,53 @@ def _run_full_benchmark_suite_experiment(config: Mapping[str, Any], config_path:
         stage_result_paths["nuplan_closed_loop_sweep"] = stage_experiment["result_path"]
         _write_stage_result(stage_experiment, f"{config_path}#nuplan_closed_loop_sweep", result)
 
+    for stage_name, runner in [
+        ("learned_retriever_training", _run_learned_retriever_training_experiment),
+        ("contextvae_world_model_study", _run_contextvae_experiment),
+        ("bench2drive_study", None),
+        ("bench2drive_vision_closed_loop", _run_bench2drive_vision_closed_loop_experiment),
+        ("carla_vision_closed_loop", _run_carla_vision_closed_loop_experiment),
+        ("carla_fixed_evaluation", None),
+        ("risk_case_expansion", None),
+        ("contextvae_expanded_study", None),
+        ("forecast_validation_study", _run_forecast_validation_experiment),
+    ]:
+        if not _stage_enabled(suite, stage_name, default=False):
+            continue
+        stage_config = _merged_stage_config(config, suite, stage_name)
+        if stage_name == "contextvae_world_model_study" and not stage_config.get("benchmark"):
+            stage_config["benchmark"] = dict(stage_results.get("risk_benchmark_suite", {}).get("outputs", {})).get("world_model")
+        if stage_config.get("config_path"):
+            result_payload = run_experiment_config(Path(str(stage_config["config_path"])))
+            result = result_payload["result"]
+        elif stage_name == "bench2drive_study":
+            from nusc_scene_agent.bench2drive_study import run_bench2drive_study
+            result = run_bench2drive_study(stage_config)
+        elif stage_name == "carla_fixed_evaluation":
+            from nusc_scene_agent.carla_fixed_evaluation import run_fixed_carla_evaluation
+            result = run_fixed_carla_evaluation(stage_config)
+        elif stage_name == "risk_case_expansion":
+            from nusc_scene_agent.risk_case_expansion import expand_risk_cases
+            result = expand_risk_cases(Path(stage_config["db"]), Path(stage_config["output"]),
+                                       per_family=int(stage_config.get("per_family", 30)),
+                                       candidate_limit=int(stage_config.get("candidate_limit", 180)),
+                                       scene_split=str(stage_config.get("scene_split", "all")),
+                                       reuse_validated=bool(stage_config.get("reuse_validated", False)))
+        elif stage_name == "contextvae_expanded_study":
+            result = _run_contextvae_experiment({"contextvae_world_model_study": stage_config})
+        else:
+            result = runner({stage_name: stage_config})
+        stage_results[stage_name] = result
+        stage_experiment = {"id": f"full_{stage_name}", "type": stage_name,
+                            "result_path": str(output_dir / f"{stage_name}_result.json")}
+        stage_result_paths[stage_name] = stage_experiment["result_path"]
+        _write_stage_result(stage_experiment, f"{config_path}#{stage_name}", result)
+
     if _stage_enabled(suite, "failure_mining", default=True):
         stage_config = _merged_stage_config(config, suite, "failure_mining")
         if not stage_config.get("inputs"):
             stage_config["inputs"] = _full_suite_failure_inputs(stage_results)
-        stage_output = Path(str(stage_config.get("output") or "outputs/model_in_the_loop_failure_mining_v1"))
+        stage_output = Path(str(stage_config.get("output") or DEFAULT_FAILURE_MINING_OUTPUT))
         stage_experiment = {
             "id": "full_failure_mining",
             "type": "failure_mining",
@@ -582,6 +673,21 @@ def _run_full_benchmark_suite_experiment(config: Mapping[str, Any], config_path:
         stage_results["failure_mining"] = result
         stage_result_paths["failure_mining"] = stage_experiment["result_path"]
         _write_stage_result(stage_experiment, f"{config_path}#failure_mining", result)
+
+    if _stage_enabled(suite, "failure_aware_reranking", default=False):
+        stage_config = _merged_stage_config(config, suite, "failure_aware_reranking")
+        failure = dict(stage_results.get("failure_mining") or {})
+        if not stage_config.get("query_config") and failure.get("output_dir"):
+            stage_config["query_config"] = str(Path(failure["output_dir"]) / "failure_update_queries.yaml")
+        training = dict(stage_results.get("learned_retriever_training") or {})
+        if not stage_config.get("learned_checkpoint") and training.get("output_dir"):
+            stage_config["learned_checkpoint"] = str(Path(training["output_dir"]) / "learned_retriever.pt")
+        result = _run_failure_aware_reranking_experiment({"failure_aware_reranking": stage_config})
+        stage_results["failure_aware_reranking"] = result
+        stage_experiment = {"id": "full_failure_aware_reranking", "type": "failure_aware_reranking",
+                            "result_path": str(output_dir / "failure_aware_reranking_result.json")}
+        stage_result_paths["failure_aware_reranking"] = stage_experiment["result_path"]
+        _write_stage_result(stage_experiment, f"{config_path}#failure_aware_reranking", result)
 
     if _stage_enabled(suite, "result_registry", default=True):
         registry_config = _merged_stage_config(config, suite, "result_registry")
@@ -638,7 +744,7 @@ def _run_risk_benchmark_suite_experiment(config: Mapping[str, Any]) -> Dict[str,
 
     scenario_output = Path(str(suite.get("scenario_output") or "benchmarks/trainval_scenario_mining_v1.yaml"))
     perception_output = Path(str(suite.get("perception_output") or "benchmarks/trainval_perception_slices_v1.json"))
-    world_model_output = Path(str(suite.get("world_model_output") or "benchmarks/trainval_world_model_slices_v1.json"))
+    world_model_output = Path(str(suite.get("world_model_output") or "benchmarks/trainval_world_model_slices_v2.json"))
     bev_output = Path(str(suite.get("bev_occupancy_output") or "benchmarks/trainval_bev_occupancy_slices_v1.json"))
 
     scenario = generate_scenario_mining_benchmark_from_case_library(
@@ -655,7 +761,10 @@ def _run_risk_benchmark_suite_experiment(config: Mapping[str, Any]) -> Dict[str,
         perception_benchmark_path=perception_output,
         db_path=db_path,
         output_path=world_model_output,
-        grid_spec=grid_spec,
+        grid_spec=suite.get("world_model_grid_spec") or grid_spec,
+        history_s=float(suite.get("history_s", 2.0)),
+        future_s=float(suite.get("future_s", 6.0)),
+        min_future_s=float(suite.get("min_future_s", 0.0)),
     )
     bev_occupancy = generate_bev_occupancy_benchmark_from_perception_benchmark(
         perception_benchmark_path=perception_output,
@@ -745,15 +854,16 @@ def _run_failure_mining_experiment(config: Mapping[str, Any]) -> Dict[str, Any]:
         str(
             failure_mining.get("output")
             or dict(config.get("experiment") or {}).get("output")
-            or "outputs/model_in_the_loop_failure_mining_v1"
+            or DEFAULT_FAILURE_MINING_OUTPUT
         )
     )
     inputs = [Path(str(item)) for item in list(failure_mining.get("inputs") or [])]
     if not inputs:
         inputs = [
             Path("outputs/trainval_bev_occupancy_proxy_study_v1"),
-            Path("outputs/trainval_world_model_proxy_study_v1"),
-            Path("outputs/contextvae_world_model_study_v1"),
+            Path("outputs/trainval_world_model_proxy_study_v2"),
+            Path("outputs/contextvae_world_model_study_v3"),
+            Path("outputs/contextvae_expanded_study_v1"),
             Path("outputs/nuplan_replay_sweep_v1"),
             Path("outputs/nuplan_closed_loop_sweep_v1"),
         ]
@@ -765,20 +875,70 @@ def _run_failure_mining_experiment(config: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
 
+def _run_learned_retriever_training_experiment(config: Mapping[str, Any]) -> Dict[str, Any]:
+    stage = dict(config.get("learned_retriever_training") or {})
+    output = Path(str(stage.get("output") or DEFAULT_LARGE_LEARNED_RETRIEVER_OUTPUT))
+    training = LearnedRetrieverConfig(**{"epochs": 20, **dict(stage.get("training") or {})})
+    report = train_weakly_supervised_scene_retriever(
+        db_path=Path(str(stage.get("db") or "artifacts/index/v1.0-trainval.sqlite")),
+        output_dir=output, config=training,
+        max_groups_per_family=int(stage.get("max_groups_per_family", 1000)),
+    )
+    return {"output_dir": str(output), "report": report}
+
+
+def _run_contextvae_experiment(config: Mapping[str, Any]) -> Dict[str, Any]:
+    from nusc_scene_agent.contextvae_integration import run_contextvae_world_model_study
+
+    stage = dict(config.get("contextvae_world_model_study") or {})
+    return run_contextvae_world_model_study(
+        benchmark_path=Path(str(stage.get("benchmark") or "benchmarks/trainval_world_model_slices_v2.json")),
+        dataroot=Path(str(stage.get("dataroot") or "data/sets/nuscenes")),
+        output_dir=Path(str(stage.get("output") or "outputs/contextvae_world_model_study_v3")),
+        version=str(stage.get("version", "v1.0-trainval")),
+        repo_dir=Path(str(stage.get("repo") or "external/ContextVAE")),
+        checkpoint_path=Path(str(stage.get("checkpoint") or "external/ContextVAE/models/nuscenes_res18")),
+        device=str(stage.get("device", "")), batch_size=int(stage.get("batch_size", 8)),
+        mode_count=int(stage.get("mode_count", 5)), clustering_samples=int(stage.get("clustering_samples", 2000)),
+        map_scale=int(stage.get("map_scale", 1)), seed=int(stage.get("seed", 1)),
+    )
+
+
+def _run_forecast_validation_experiment(config: Mapping[str, Any]) -> Dict[str, Any]:
+    from nusc_scene_agent.forecast_validation import audit_forecast_generalization
+    from nusc_scene_agent.risk_case_expansion import expand_risk_cases
+
+    stage = dict(config.get("forecast_validation_study") or {})
+    output = Path(str(stage.get("output") or "outputs/forecast_validation_study_v1"))
+    expand_risk_cases(Path(str(stage.get("db") or "artifacts/index/v1.0-trainval.sqlite")), output / "cases",
+                      scene_split="val", per_family=int(stage.get("per_family", 30)),
+                      candidate_limit=int(stage.get("candidate_limit", 180)),
+                      reuse_validated=bool(stage.get("reuse_validated", False)))
+    result = _run_contextvae_experiment({"contextvae_world_model_study": {
+        **dict(stage.get("forecast") or {}), "benchmark": str(output / "cases/forecast.json"),
+        "output": str(output / "contextvae"),
+    }})
+    development = stage.get("development_benchmarks") or []
+    if development:
+        result["generalization_audit"] = audit_forecast_generalization(
+            output / "contextvae", [Path(str(path)) for path in development], output / "scene_disjoint_audit")
+    return result
+
+
 def _run_failure_aware_reranking_experiment(config: Mapping[str, Any]) -> Dict[str, Any]:
     reranking = dict(config.get("failure_aware_reranking") or {})
     output_dir = Path(
         str(
             reranking.get("output")
             or dict(config.get("experiment") or {}).get("output")
-            or "outputs/failure_aware_reranking_eval_v1"
+            or DEFAULT_FAILURE_AWARE_RERANKING_OUTPUT
         )
     )
     payload = run_failure_aware_reranking_eval(
-        query_config=Path(str(reranking.get("query_config") or "outputs/model_in_the_loop_failure_mining_v1/failure_update_queries.yaml")),
+        query_config=Path(str(reranking.get("query_config") or DEFAULT_FAILURE_UPDATE_QUERIES)),
         db_path=Path(str(reranking.get("db") or "artifacts/index/v1.0-trainval.sqlite")),
         output_dir=output_dir,
-        learned_checkpoint=Path(str(reranking.get("learned_checkpoint") or "outputs/learned_retriever_trainval_large_v2/learned_retriever.pt")),
+        learned_checkpoint=Path(str(reranking.get("learned_checkpoint") or DEFAULT_LEARNED_RETRIEVER_CHECKPOINT)),
         candidate_pool=int(reranking.get("candidate_pool") or 48),
         top_k=int(reranking.get("top_k") or 3),
         max_queries=int(reranking.get("max_queries") or 24),
@@ -864,22 +1024,23 @@ def _write_stage_result(experiment: Mapping[str, Any], config_path: str, result:
 
 
 def _full_suite_failure_inputs(stage_results: Mapping[str, Any]) -> list[str]:
-    inputs = [
-        "outputs/trainval_bev_occupancy_proxy_study_v1",
-        "outputs/trainval_world_model_proxy_study_v1",
-        "outputs/contextvae_world_model_study_v1",
-        "outputs/nuscenes_forecast_baselines_eval",
-    ]
+    risk = dict(stage_results.get("risk_benchmark_suite") or {})
+    proxies = dict(risk.get("proxy_studies") or {})
+    inputs = [str(study["output_dir"]) for study in proxies.values() if study.get("output_dir")]
+    contextvae = dict(stage_results.get("contextvae_world_model_study") or {})
+    if contextvae.get("output_dir"):
+        inputs.append(str(contextvae["output_dir"]))
+    expanded = dict(stage_results.get("contextvae_expanded_study") or {})
+    if expanded.get("output_dir"):
+        inputs.append(str(expanded["output_dir"]))
     replay = dict(stage_results.get("nuplan_replay_sweep") or {})
     closed_loop = dict(stage_results.get("nuplan_closed_loop_sweep") or {})
     if replay.get("output_dir"):
         inputs.append(str(replay["output_dir"]))
-    else:
-        inputs.append("outputs/nuplan_replay_sweep_v1")
     if closed_loop.get("output_dir"):
         inputs.append(str(closed_loop["output_dir"]))
-    else:
-        inputs.append("outputs/nuplan_closed_loop_sweep_v1")
+    if not inputs:
+        raise ValueError("Failure mining requires current evaluation stages or explicit input paths.")
     return inputs
 
 
@@ -896,6 +1057,22 @@ def _full_suite_result_sources(stage_results: Mapping[str, Any], stage_result_pa
     failure = dict(stage_results.get("failure_mining") or {})
     if failure.get("report_json"):
         sources.append(str(failure["report_json"]))
+    artifact_names = {
+        "bench2drive_study": "study_summary.json",
+        "carla_fixed_evaluation": "fixed_evaluation.json",
+        "contextvae_world_model_study": "contextvae_study_manifest.json",
+        "contextvae_expanded_study": "contextvae_study_manifest.json",
+        "forecast_validation_study": "contextvae_study_manifest.json",
+        "learned_retriever_training": "training_report.json",
+        "risk_case_expansion": "expansion_report.json",
+        "failure_aware_reranking": "failure_aware_reranking_eval.json",
+    }
+    for name, filename in artifact_names.items():
+        result = dict(stage_results.get(name) or {})
+        if result.get("output_dir"):
+            sources.append(str(Path(result["output_dir"]) / filename))
+        elif stage_result_paths.get(name):
+            sources.append(stage_result_paths[name])
     return sources
 
 

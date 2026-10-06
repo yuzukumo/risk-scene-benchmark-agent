@@ -1,384 +1,103 @@
-# Benchmark Snapshot Notes
+# Benchmark Snapshot
 
-Benchmark specifications under `benchmarks/` are versioned; generated outputs under `outputs/` are excluded from version control by default. This document records benchmark scale, metric boundaries, and representative local results.
+Results use the corrected evaluation protocols described in [evaluation_protocol.md](evaluation_protocol.md). Legacy 64-case Bench2Drive replay results are withdrawn: their reference route contained a backward splice and states were compared at different timestamps. Old confidence intervals do not repair those errors.
 
-The benchmark stack is scenario-centric. `nuScenes`, `nuPlan`, `Bench2Drive`, and `CARLA` are connected through the shared taxonomy in [configs/scenario_taxonomy.yaml](../configs/scenario_taxonomy.yaml). `nuScenes` anchors define and validate real-world risk semantics; `nuPlan` evaluates logged replay behavior; `Bench2Drive` trains and diagnoses a vision trajectory planner; `CARLA` provides semantically matched closed-loop visual evidence.
+## Controlled Planner Study
 
-## Benchmark Scale
+Configuration: [bench2drive_controlled_study.yaml](../configs/bench2drive_controlled_study.yaml).
 
-| Source | Candidate or Anchor Count | Exported Benchmark Count | Notes |
-| --- | ---: | ---: | --- |
-| `nuScenes` trainval case library | `33` unique cases, `30` passed cases | configurable | mined with natural-language queries and deterministic validation |
-| `nuScenes` scenario-mining benchmark | `24` anchors | `48` queries | canonical and paraphrase query variants |
-| `nuScenes` perception, BEV occupancy, and world-model slices | `24` anchors | `24` cases per layer | derived from scenario-mining anchors |
-| `nuPlan` cross-split replay sweep | `1556` candidate anchors | `112` replay cases | controlled by per-study caps |
-| `nuPlan` cross-split closed-loop replay sweep | `1556` candidate anchors | `112` replay-simulation cases | uses the same scenario sampling as replay regression |
-| `Bench2Drive` vision planner | `44,940` cached samples | `4,334` held-out test samples | multi-camera vision imitation training |
-| `Bench2Drive` vision closed-loop | `44,940` cached samples | `64` held-out test cases | model-in-the-loop rollout with vehicle dynamics |
-| `CARLA` semantic demo mining | `1` configured target class | audit-gated | model-waypoint ego control with Traffic Manager ambient vehicles and semantic evidence checks |
+Six arms are evaluated with training seeds 7, 17 and 27: baseline, geometric trajectory supervision, navigation-only input, 4x4 spatial pooling, random half-data sampling and mined-prior half-data sampling. All use identical trajectory selection without fitted mode calibration. Test evaluation includes 4,334 samples from all 97 held-out clips.
 
-The versioned benchmark specifications use sampling caps over validated mined cases. `nuScenes` reference labels are weakly supervised anchors derived from the validated case library, including scene identity, actor identity, event-window range, and peak sample. These anchors are deterministic benchmark targets, not independent human annotations; metrics that use them should be interpreted as anchor consistency rather than true semantic recall.
+The completed study publishes `outputs/bench2drive_controlled_study_v2/study_summary.json`, per-seed comparisons, training requests, input hashes and model checkpoints. Compact results and source hashes are retained in [results_snapshot.json](results_snapshot.json).
 
-Main entry point:
+<!-- CONTROLLED_RESULTS_START -->
+The controlled study is running. No multi-seed improvement claim is made before all configured arms finish.
+<!-- CONTROLLED_RESULTS_END -->
 
-```bash
-python -m nusc_scene_agent run-full-benchmark-suite
-```
+## Learned Retrieval
 
-The suite writes a top-level summary under `outputs/full_benchmark_suite_v1` and a compact registry under `outputs/full_benchmark_suite_v1/result_registry`.
-
-## Metric Boundaries
-
-Scenario-mining metrics evaluate retrieval and grounding against weakly supervised anchors: validation acceptance@K, scene match, actor match, reference-case consistency, event-window IoU, and peak-sample error.
-
-The reported best validation quality follows the selection policy: accepted cases take precedence, then quality is maximized. Artifacts also retain the ungated maximum quality as a separate diagnostic field.
-
-Perception-slice metrics evaluate short-window actor coverage: anchor recall, full-track success, event recall, contiguous temporal coverage, center error, and first-match lag.
-
-Sparse BEV occupancy metrics evaluate actor-center occupancy: occupancy IoU, primary actor recall, context recall, anchor-frame IoU, and risk-fidelity score.
-
-World-model metrics evaluate future trajectory and sparse future occupancy: ADE, FDE, `MinADE@K`, `MinFDE@K`, `MissRate@K`, occupancy IoU, closest-approach distance and time errors, and risk fidelity.
-
-`nuPlan` replay-regression metrics compare predicted ego rollouts with logged replay windows: ego ADE/FDE, minimum-distance error, minimum-TTC error, red-light context recall, comfort-target errors, collision-proxy mismatch, and risk fidelity.
-
-`nuPlan` closed-loop replay metrics roll the ego state forward with planner profiles while replaying logged actors and traffic-light context. Reported metrics include ego ADE/FDE, minimum-distance error, minimum-TTC error, a bounded progress ratio, the raw progress ratio used by the score, collision-proxy mismatch, comfort violations, closed-loop drift, and closed-loop score. The bounded ratio is for reporting; the raw ratio preserves over-progress penalties in the score.
-
-Bench2Drive vision-planner metrics evaluate supervised ego-trajectory prediction from six camera views and route features. Reported metrics include waypoint ADE/FDE, control loss, brake accuracy, and training throughput. The closed-loop layer rolls the trained model forward in a waypoint-control bicycle-model simulation; reported metrics include closed-loop ADE/FDE, route completion, lateral error, and closed-loop score. This layer is diagnostic and should not be interpreted as a full simulator benchmark.
-
-CARLA semantic demo mining evaluates the trained multi-camera planner in synchronous urban rollouts selected from the shared scenario taxonomy. Ego control follows model-predicted waypoints through a low-level vehicle controller, with optional safety-brake override. CARLA Traffic Manager controls ambient vehicles. A rollout is retained as a semantic demo only if video, control-attribution, traffic-context, and scenario-specific evidence checks pass. The retained rollout is qualitative audit evidence, not a statistically powered closed-loop benchmark.
-
-Proxy profiles are controlled perturbations for sensitivity analysis. External baselines are evaluated through adapter interfaces for official `nuScenes` prediction files, forecast outputs, and `ContextVAE`. Baseline rows with different case counts should be compared as subset diagnostics rather than as significance-tested model rankings. Validation quality is a continuous diagnostic in `[0, 100]`; validation acceptance is a separate deterministic gate. Reported best quality uses accepted cases first, while ungated maxima are retained as diagnostics.
-
-Retrieval weights, validation-quality weights, pass gates, and behavior thresholds are exported in query and case artifacts. `benchmark-score-sweep` compares retrieval profiles, `benchmark-validation-score-sweep` compares validation-quality profiles, and `benchmark-threshold-sweep` scales metric-valued behavior thresholds. Each command varies one component while holding the other components fixed.
-
-## Core `nuScenes` Suite
-
-Dataset:
-
-- `nuScenes v1.0-trainval`
-- map expansion
-
-Case-library snapshot:
-
-| Metric | Value |
-| --- | --- |
-| Queries | 16 |
-| Validation acceptance@1 | 16/16 |
-| Validation acceptance@K | 16/16 |
-| Selected cases | 36 |
-| Unique cases | 33 |
-| Unique passed cases | 30 |
-| Mean best validation quality | 89.97 |
-
-Scenario-mining benchmark:
-
-| Quantity | Value |
-| --- | --- |
-| Anchor cases | 24 |
-| Query variants | 48 |
-| Variants per anchor | canonical query and paraphrase query |
-| Source case library | `outputs/trainval_case_library_v1/case_library_enriched.json` |
-
-Behavior distribution:
-
-| Behavior | Anchors | Queries |
-| --- | ---: | ---: |
-| `stopped_lead` | 7 | 14 |
-| `crossing` | 5 | 10 |
-| `proximity` | 5 | 10 |
-| `oncoming` | 4 | 8 |
-| `cut_in` | 3 | 6 |
-
-## Sensitivity Analysis
-
-The following deterministic sweeps keep benchmark queries and acceptance gates fixed. They quantify sensitivity to retrieval weights, validation-quality weights, and metric-valued behavior thresholds; they do not provide independent semantic ground truth.
-
-| Study | Profile | Validation acceptance@1 | Mean best quality | Unique passed cases |
-| --- | --- | ---: | ---: | ---: |
-| Retrieval weights | `default` | `16/16` | `89.97` | `30` |
-| Retrieval weights | `equal` | `16/16` | `89.03` | `29` |
-| Validation-quality weights | `default` | `16/16` | `89.97` | `30` |
-| Validation-quality weights | `equal` | `16/16` | `89.31` | `30` |
-| Behavior thresholds | `0.85x` | `16/16` | `89.49` | `28` |
-| Behavior thresholds | `1.00x` | `16/16` | `89.97` | `30` |
-| Behavior thresholds | `1.15x` | `16/16` | `89.97` | `31` |
-
-Validation acceptance@1 is unchanged across all profiles. Equal validation-quality weights reduce mean best quality by `0.66` without changing the accepted case count, so the named default profile remains the primary configuration. Retrieval and threshold variants alter case-library composition modestly; these changes are reported as sensitivity diagnostics rather than evidence of semantic superiority.
-
-## Perception And BEV Occupancy
-
-Perception-slice snapshot:
-
-| Profile | Cases | Anchor Recall | Full Track | Mean Event Recall | Mean Contiguous Coverage | Mean Center Error |
-| --- | ---: | --- | --- | ---: | ---: | ---: |
-| `oracle_tracking` | 24 | 24/24 | 24/24 | 1.000 | 1.000 | 0.000 |
-| `delayed_track` | 24 | 23/24 | 0/24 | 0.719 | 0.719 | 0.403 |
-| `crossing_sparse_track` | 24 | 22/24 | 19/24 | 0.901 | 0.823 | 0.126 |
-
-BEV occupancy snapshot:
-
-| Profile | Cases | Mean Occupancy IoU | Primary Recall | Context Recall | Anchor IoU | Risk Fidelity |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `oracle_occupancy` | 24 | 1.000 | 1.000 | 1.000 | 1.000 | 1.000 |
-| `context_drop_occupancy` | 24 | 0.553 | 1.000 | 0.502 | 0.554 | 0.699 |
-| `risk_actor_only` | 24 | 0.105 | 1.000 | 0.003 | 0.104 | 0.398 |
-
-The sparse BEV layer stores primary risk actor cells, surrounding context actor cells, and union occupancy cells on a fixed ego-frame grid. It evaluates whether predictions cover the risk actor and nearby dynamic context during the mined event window.
-
-## World-Model Evaluation
-
-Scenario-conditioned world-model snapshot:
-
-| Profile | Cases | Full Horizon | Mean Horizon Recall | Mean ADE | Mean FDE | Mean Occupancy IoU | Mean Risk Fidelity |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| `oracle_rollout` | 24 | 24/24 | 1.000 | 0.000 | 0.000 | 1.000 | 1.000 |
-| `risk_underreach_rollout` | 24 | 24/24 | 1.000 | 0.725 | 0.921 | 0.975 | 0.892 |
-| `kinematic_rollout` | 24 | 24/24 | 1.000 | 1.010 | 1.347 | 0.958 | 0.869 |
-
-Official physics baselines on the common benchmark anchors:
-
-| Profile | Cases | Full Horizon | Mean ADE | Mean FDE | Mean MinADE@1 | Mean MissRate@5 | Mean Occupancy IoU | Mean Risk Fidelity |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `physics_oracle` | 8 | 8/8 | 0.212 | 0.214 | 0.212 | 0.000 | 0.175 | 0.840 |
-| `cv_heading` | 8 | 8/8 | 0.288 | 0.394 | 0.288 | 0.125 | 0.175 | 0.823 |
-
-`ContextVAE` baseline on the forecast-compatible subset:
-
-| Profile | Cases | Full Horizon | Mean ADE | Mean MinADE@5 | Mean Occupancy IoU | Mean Risk Fidelity |
-| --- | ---: | --- | ---: | ---: | ---: | ---: |
-| `physics_oracle` | 7 | 7/7 | 0.135 | 0.135 | 0.197 | 0.860 |
-| `cv_heading` | 7 | 7/7 | 0.139 | 0.139 | 0.197 | 0.859 |
-| `contextvae` | 7 | 7/7 | 0.280 | 0.207 | 0.181 | 0.841 |
-
-The `ContextVAE` comparison evaluates the three forecast profiles on the same seven forecast-compatible cases; the preceding eight-case rows are common-anchor diagnostics. The comparison artifact includes clip-level bootstrap intervals; it does not support a statistically powered ranking at this sample size.
-
-## `nuPlan` Replay Evaluation
-
-Cross-split replay-regression snapshot:
-
-| Profile | Cases | Full Horizon | Mean Ego ADE | Mean Ego FDE | Mean Min-Distance Error | Mean Min-TTC Error | Mean Risk Fidelity |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: |
-| `logged_ego` | 112 | 112/112 | 0.000 | 0.000 | 0.000 | 0.000 | 1.000 |
-| `history_kinematic` | 112 | 112/112 | 0.916 | 2.656 | 0.337 | 0.285 | 0.965 |
-| `constant_velocity` | 112 | 112/112 | 12.774 | 25.640 | 4.269 | 0.304 | 0.808 |
-| `stopped` | 112 | 112/112 | 10.666 | 21.372 | 3.772 | 2.045 | 0.796 |
-
-Closed-loop replay snapshot:
-
-| Profile | Cases | Full Horizon | Mean Ego ADE | Mean Ego FDE | Mean Min-Distance Error | Mean Min-TTC Error | Mean Progress Ratio | Closed-Loop Score |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `logged_ego_oracle` | 112 | 112/112 | 0.000 | 0.000 | 0.000 | 0.000 | 1.000 | 1.000 | 1.000 |
-| `history_kinematic` | 112 | 112/112 | 1.027 | 2.858 | 0.353 | 0.286 | 0.921 | 1.022 | 0.950 |
-| `idm_like_following` | 112 | 112/112 | 1.500 | 4.152 | 0.427 | 0.343 | 0.826 | 0.905 | 0.935 |
-
-Study coverage:
-
-| Study | DBs | Candidates | Cases |
-| --- | ---: | ---: | ---: |
-| `mini` | 64 | 243 | 16 |
-| `val_sample` | 128 | 429 | 24 |
-| `train_boston_sample` | 128 | 340 | 24 |
-| `train_pittsburgh_sample` | 128 | 294 | 24 |
-| `train_singapore_sample` | 128 | 250 | 24 |
-
-## Bench2Drive Vision Planner
-
-Dataset and cache:
-
-| Quantity | Value |
+<!-- RETRIEVAL_RESULTS_START -->
+| Quantity | Corrected result |
 | --- | ---: |
-| Source archives | 1,000 |
-| Manifest rows after finite-value filtering | 44,940 |
-| Train samples | 35,629 |
-| Validation samples | 4,977 |
-| Held-out test samples | 4,334 |
-| Cameras | 6 |
-| Tensor cache image size | 160 x 160 |
-| Tensor cache size | 20 GB |
+| Weak-rule groups | 4,000 |
+| Train / validation groups | 3,209 / 791 |
+| Train / validation candidate scenes | 678 / 169 |
+| Shared candidate scenes | 0 |
+| Shared annotations | 0 |
+| Validation weak-rule consistency@1 | 1.000 |
+| Failure-query acceptance@1, rule / learned | 23/24 / 23/24 |
+| Failure-query acceptance@K, rule / learned | 23/24 / 24/24 |
 
-Training configuration:
+Learned-minus-rule mean top-1 validation quality is -2.7454; mean best-candidate quality is -0.2167. The recorded selection policy is `rule_ranked_validation` (learned final ranker selected: false; learned candidate generator selected: false).
 
-| Quantity | Value |
-| --- | --- |
-| Model | `research` trajectory transformer |
-| Input | six camera views and route features |
-| Target | future ego waypoints, control values, brake state |
-| Training | `8`-GPU distributed data parallel |
-| Per-GPU batch size | 64 |
-| Epochs | 24 |
-| Precision | `fp16`; TF32 and cuDNN benchmark enabled |
-| Runtime | 289.538 seconds |
-| Loss additions | displacement `0.1`; endpoint `0.025`; path length `0.025` |
-| Trajectory modes | 4 |
-| Trajectory selection | expected mixture over mode probabilities |
-| Trajectory temperature | 0.5 |
+Sources: `outputs/learned_retriever_trainval_v3/training_report.json` and `outputs/failure_aware_reranking_eval_v4/failure_aware_reranking_eval.json`.
+<!-- RETRIEVAL_RESULTS_END -->
 
-Held-out test evaluation:
+Deterministic validation makes the final selection. The labels are rule-derived. These are neither independent human semantic labels nor an unbiased estimate of unseen natural-language query performance. The earlier scene-held-out result was invalid because training negatives contained validation scenes.
 
-| Metric | Value |
-| --- | ---: |
-| ADE | 1.653 |
-| FDE | 2.697 |
-| Lateral MAE | 0.552 m |
-| Turn lateral MAE | 0.815 m |
-| Brake accuracy | 0.847 |
-| Brake F1 | 0.828 |
-| Oracle ADE over trajectory modes | 0.992 |
-| Oracle FDE over trajectory modes | 1.313 |
+## Forecast Slices
 
-Validation trajectory-selection search:
+The revised benchmark preserves the mined anchor and obtains future actor observations from the database beyond the original event window. It retains 19 of the original 24 anchors with at least 3 seconds of future. Five cover approximately 6 seconds. Excluded cases and actual horizons are stored in [trainval_world_model_slices_v2.json](../benchmarks/trainval_world_model_slices_v2.json).
 
-| Model | ADE | FDE | Brake F1 |
-| --- | ---: | ---: | ---: |
-| `trajectory_transformer_argmax` | 1.665 | 2.676 | 0.827 |
-| `trajectory_transformer_topk_expected` | 1.636 | 2.639 | 0.827 |
-| `trajectory_transformer_expected_t0.5` | 1.610 | 2.624 | 0.827 |
+ContextVAE preparation additionally requires continuous actor context and 12 future keyframes, and deduplicates identical actor-anchor pairs.
 
-Planner diagnostic summary:
+<!-- FORECAST_RESULTS_START -->
+Official-validation mining retains 22 compatible actor-anchor pairs from 70 forecast cases after continuity checks. A scene-identity audit excludes 7 cases from 6 scenes already present in the declared development benchmarks. The primary comparison below uses the remaining 15 cases from 14 scenes, with zero development-scene overlap. Exclusion depends only on scene identity; the archived predictions are unchanged. This validation slice is excluded from the development failure-query feedback loop.
 
-| Metric | Value |
-| --- | ---: |
-| Samples | 4,334 |
-| Underreach rate | 0.2439 |
-| Severe underreach rate | 0.0708 |
-| Near-stop prediction rate | 0.0000 |
-| Mean lateral error | 0.552 m |
-| Predicted-to-target speed ratio | 0.959 |
-| Brake F1 | 0.828 |
-| Diagnostic status | `ready_for_closed_loop_diagnostics` |
-
-Planner diagnostics are used as readiness checks for subsequent closed-loop analysis. The CARLA stage uses semantic audit gates and reports safety-override attribution instead of treating supervised ADE/FDE as sufficient closed-loop evidence.
-
-Model-in-the-loop closed-loop validation:
-
-| Metric | Value |
-| --- | ---: |
-| Cases | 64 held-out test cases |
-| Mean closed-loop ADE | 9.721 m |
-| Mean closed-loop FDE | 19.471 m |
-| Mean lateral error | 1.568 m |
-| Mean route completion | 0.799 |
-| Mean closed-loop score | 0.157 |
-
-Paired comparison with the original trajectory-only objective on the same 64 cases:
-
-| Metric | Baseline | Candidate | Oriented improvement | 95% CI | Candidate win rate |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Closed-loop ADE | 11.260 m | 9.721 m | `+1.539 m` | `[+0.739, +2.382]` | 0.625 |
-| Closed-loop FDE | 23.690 m | 19.471 m | `+4.218 m` | `[+2.051, +6.541]` | 0.641 |
-| Mean lateral error | 1.436 m | 1.568 m | `-0.132 m` | `[-0.406, +0.140]` | 0.484 |
-| Route completion | 0.746 | 0.799 | `+0.053` | `[+0.009, +0.105]` | 0.484 |
-| Closed-loop score | 0.087 | 0.157 | `+0.070` | `[+0.023, +0.120]` | 0.609 |
-
-Positive values are oriented so that higher is better. The intervals are case-level percentile-bootstrap intervals with seed `7` and `10,000` replicates. The candidate improves the closed-loop-oriented metrics while having no statistically conclusive change in lateral error.
-
-Paired held-out open-loop comparison on `4,334` samples from `97` clips:
-
-| Metric | Baseline | Candidate | Oriented improvement | 95% CI |
+| Model | Common cases | ADE (m) | FDE (m) | Risk fidelity |
 | --- | ---: | ---: | ---: | ---: |
-| ADE | 1.622 m | 1.653 m | `-0.031 m` | `[-0.069, +0.010]` |
-| FDE | 2.693 m | 2.697 m | `-0.003 m` | `[-0.089, +0.084]` |
-| Lateral MAE | 0.525 m | 0.552 m | `-0.028 m` | `[-0.045, -0.013]` |
-| Path-length error | 0.465 m | 0.396 m | `+0.069 m` | `[+0.036, +0.101]` |
-| Brake F1 | 0.827 | 0.828 | `+0.002` | `[-0.028, +0.034]` |
+| Constant velocity and heading | 15 | 1.820 | 4.362 | 0.690 |
+| ContextVAE | 15 | 3.427 | 9.372 | 0.483 |
+| Physics oracle, GT-selected upper bound | 15 | 1.160 | 3.004 | 0.705 |
 
-Open-loop intervals use clip-level percentile bootstrap with seed `7`, `10,000` replicates, and `97` clip clusters. The regularized objective improves path-length error but slightly worsens lateral imitation error; ADE, FDE, and brake F1 changes are inconclusive. This trade-off is the reason the closed-loop comparison is reported as the primary model result rather than a claim of uniform improvement.
+ContextVAE minus constant-velocity ADE is +1.606 m (paired scene-bootstrap 95% interval [-0.842, +3.336] m; 14 scene clusters). Lower ADE is better. Physics oracle selects a motion model using future ground truth and is not deployable.
 
-The Bench2Drive model-in-the-loop layer is a proxy diagnostic using simplified vehicle dynamics. The CARLA section reports the retained visual rollout evidence.
+Target durations range from 5.55 to 6.05 seconds; 6 cases cover approximately 6 seconds. Full-horizon coverage means covering each case's available targets, not a uniform 6-second benchmark.
 
-## CARLA Semantic Demo Mining
+The complete 22-case official-validation slice is retained as a secondary result: CV ADE 1.719 m and ContextVAE ADE 3.946 m. It includes development-scene overlap.
 
-The CARLA stage searches route and traffic configurations for an audit-gated right-turn pedestrian-yield target:
+The other slices are development diagnostics because they include official training scenes. They are not pooled with the primary validation slice:
 
-| Target | Evidence Gate |
-| --- | --- |
-| `pedestrian_yield` | crosswalk pedestrian actor, ego yield/brake response, no collision |
+| Development slice | Cases / scenes | Train / val cases | CV ADE (m) | ContextVAE ADE (m) |
+| --- | ---: | ---: | ---: | ---: |
+| Original | 9 / 7 | 5 / 4 | 4.253 | 4.625 |
+| Expanded | 28 / 26 | 23 / 5 | 1.315 | 2.913 |
 
-Only passing attempts are promoted from trial runs to `outputs/carla_semantic_demo_final`. The retained report records MP4 paths, states CSV, route traces, control attribution, and semantic audit status. The README references a curated copy of the retained demo under `assets/`.
+Sources and paired intervals are retained in [results_snapshot.json](results_snapshot.json). These are mined slices with substantial exclusions, not the official nuScenes prediction benchmark.
+<!-- FORECAST_RESULTS_END -->
 
-Semantic-gated CARLA run:
+Controlled proxy perturbations on the 19 revised cases yield kinematic ADE 2.801 m and risk fidelity 0.750. Oracle and perturbed-ground-truth outputs validate metric sensitivity, not learned world-model capability. Sparse occupancy uses actor-center cells, not dense scene occupancy.
 
-| Quantity | Value |
-| --- | ---: |
-| Target classes | 1 |
-| Passed target classes | 1 |
-| Attempts | 1 |
-| Retained rollouts | 1 |
-| Total video frames | 272 |
-| Duration | 27.1 s |
-| Traffic Manager vehicles | 13 |
-| Scripted vehicles | 0 |
-| Crosswalk pedestrians | 9 |
-| Collisions | 0 |
-| Semantic audit failures | 0 |
-| Semantic audit warnings | 0 |
-| Model waypoint-controller ratio | 1.000 |
-| Safety override ratio | 0.096 |
-| Mean lateral error | 0.728 m |
-| Route completion | 0.982 |
-| Video | `1920x1080` HEVC MP4 |
+## Fixed CARLA Evaluation
 
-Retained rollout media:
+Protocol: [carla_fixed_evaluation.yaml](../configs/carla_fixed_evaluation.yaml). Five predetermined scenario configurations are repeated with three seeds. All attempts are retained. Safety override, lane guard and traffic-light conditioning are disabled. The evaluated legacy planner remains identified by its checkpoint hash; these results are separate from the newly trained ablation arms.
 
-| Scenario | Type | Frames | Traffic Manager Vehicles | Scripted Vehicles | Collisions | Video |
-| --- | --- | ---: | ---: | ---: | ---: | --- |
-| `right_turn_pedestrian_yield` | `pedestrian_crossing` | 272 | 13 | 0 | 0 | `1920x1080` HEVC MP4 |
+<!-- CARLA_RESULTS_START -->
+The fixed suite completed 15/15 attempts with no simulator errors: 12 passed, 3 recorded collisions, and 94.2% mean route completion. All three collisions occurred on `adjacent_50`. Safety intervention was disabled throughout. These results evaluate the retained legacy checkpoint under the local protocol, separately from the newly trained ablation arms and official Bench2Drive routes.
+<!-- CARLA_RESULTS_END -->
 
-## Learned Retrieval And Failure Mining
+The retained README pedestrian demonstration is separate: 272 frames, 27.1 seconds, 13 Traffic Manager vehicles, 9 controlled pedestrians, no recorded collision, and a 9.6% safety-override ratio. It was selected for qualitative presentation and used traffic-light conditioning. Its one retained success is not a driving success rate.
 
-Weakly supervised learned retrieval:
+## Risk-Case Coverage
 
-| Quantity | Value |
-| --- | --- |
-| Training source | `artifacts/index/v1.0-trainval.sqlite` |
-| Scenario families | `vru_crossing_front`, `stopped_lead_vehicle`, `lateral_cut_in`, `oncoming_vehicle` |
-| Total training groups | 4,000 |
-| Train groups | 2,779 |
-| Scene-held-out validation groups | 1,221 |
-| Train weak-anchor consistency@1 | 1.000 |
-| Scene-held-out weak-anchor consistency@1 | 1.000 |
-| Model | `query_scene_pairwise_mlp_v1` |
+The original case library contains 33 unique entries, of which 30 pass deterministic validation. Its compact benchmark has 24 anchors and 48 canonical/paraphrase queries. Expanded coverage is generated by `risk_case_expansion.py` using scene-balanced candidates, distinct actors and temporal/map validation; rejected attempts are recorded.
 
-Failure-aware candidate-generation diagnostic:
+<!-- COVERAGE_RESULTS_START -->
+The expanded development library retains 71 cases from 61 scenes: 10 crossing, 30 stopped-lead, 1 cut-in and 30 oncoming cases. Of these, 70 have at least 3 seconds of future targets. Uneven family counts and rejected candidates remain in `outputs/risk_case_expansion_v2/expansion_report.json`.
+<!-- COVERAGE_RESULTS_END -->
 
-| Metric | Rule Ranking | Learned Candidate Generation |
-| --- | ---: | ---: |
-| Queries | 24 | 24 |
-| Validation-gated acceptance@1 | 20/24 | 20/24 |
-| Validation-gated acceptance@K | 20/24 | 24/24 |
-| Mean top-1 score delta | - | -4.1621 |
-| Mean acceptance-gated best quality delta | - | +2.095 |
-| Mean ungated maximum quality delta | - | +2.095 |
+The separate official-validation mining run retains 74 cases from 60 scenes, including 4 cut-ins; 70 have sufficient forecast targets and 22 satisfy the additional ContextVAE continuity requirements. Its results are not fed into development query generation.
 
-The learned model expands candidate coverage on failure-mined queries. Deterministic validation performs final case selection. The generated artifact reports acceptance-gated best quality separately from the ungated maximum; both are diagnostic and neither is independent semantic recall.
+No independent human semantic audit has been completed. Larger rule-validated samples improve coverage but do not remove this limitation.
 
-Failure-mining snapshot:
+## nuPlan and Perception Infrastructure
 
-| Quantity | Value |
-| --- | ---: |
-| Source files | 48 |
-| Failure records | 401 |
-| Failure clusters | 83 |
-| Benchmark update queries | 24 |
+The nuPlan replay studies retain 112 sampled windows from 576 inspected logs. The history-kinematic profile has replay ADE 0.916 m and replay-simulation ADE 1.027 m. These are short-window diagnostics with logged actors and handcrafted profiles, not official nuPlan results for a trained planner.
 
-Top failure clusters:
+Perception and actor-center occupancy slices provide adapters, ground-truth alignment and metric checks. Their oracle or controlled-drop results are infrastructure checks; they are not evidence of a newly trained detector or dense BEV occupancy model.
 
-| Source | Failure | Context | Actor/Scenario | Count |
-| --- | --- | --- | --- | ---: |
-| `nuplan_replay` | `risk_distance_error` | `large_vehicle_interaction` | `near_long_vehicle` | 44 |
-| `nuplan_replay` | `risk_distance_error` | `vru_interaction` | `near_pedestrian_on_crosswalk` | 30 |
-| `nuplan_replay` | `risk_distance_error` | `static_obstacle_context` | `near_trafficcone_on_driveable` | 25 |
-| `nuplan_replay_sweep` | `risk_distance_error` | `large_vehicle_interaction` | `near_long_vehicle` | 17 |
-| `nuplan_closed_loop` | `closed_loop_drift` | `large_vehicle_interaction` | `near_long_vehicle` | 7 |
+## Reproducibility
 
-## Result Registry
+The full-suite runner executes controlled planner training and fixed CARLA evaluation as explicit stages. Training requests record sample budgets, splits, seeds, model settings and input hashes. Per-attempt simulator errors remain visible. Artifact files are hashed after their final write; repaired historical manifests preserve their original provenance and identify the hash-only repair.
 
-| Layer | Key Result |
-| --- | --- |
-| `risk_benchmark_suite` | `24` scenario anchors, `48` queries, and `24` cases for perception, BEV occupancy, and world-model layers |
-| `nuplan_replay_regression` | `112` replay cases; best non-oracle risk fidelity `0.965` |
-| `nuplan_closed_loop_replay` | `112` replay-simulation cases; best non-oracle closed-loop score `0.950` |
-| `bench2drive_vision_planner` | `44,940` cached samples; held-out test trajectory-transformer ADE `1.653`; FDE `2.697`; brake F1 `0.828` |
-| `bench2drive_vision_closed_loop` | `64` held-out test model-in-the-loop cases; route completion `0.799`; mean lateral error `1.568 m`; closed-loop score `0.157` |
-| `carla_semantic_demo` | `1/1` semantic target passed; `272` frames; `13` Traffic Manager vehicles; `9` crosswalk pedestrians; `0` scripted vehicles; `0` collisions |
-| `failure_mining` | `401` failure records, `83` clusters, and `24` update queries |
+Direct dependency versions are in [requirements-validated.txt](../requirements-validated.txt). Unit tests run in CI without private datasets. Full training, forecast and simulator reproduction additionally require the documented local datasets, checkpoints and simulator installation.

@@ -1,5 +1,40 @@
 # Usage
 
+## Corrected Evaluation Protocols
+
+The current main experiments use fixed selection without a fitted mode calibrator, three training seeds, and all held-out test clips. Select available GPUs explicitly. The CARLA graphics adapter in its YAML is independent of the PyTorch device index.
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m nusc_scene_agent run-experiment-config --config configs/bench2drive_controlled_study.yaml
+CUDA_VISIBLE_DEVICES=6 python -m nusc_scene_agent run-experiment-config --config configs/carla_fixed_evaluation.yaml
+python -m nusc_scene_agent.risk_case_expansion --output outputs/risk_case_expansion_v2
+python -m nusc_scene_agent run-contextvae-world-model-study --benchmark benchmarks/trainval_world_model_slices_v2.json --output outputs/contextvae_world_model_study_v3
+CUDA_VISIBLE_DEVICES=6 python -m nusc_scene_agent run-experiment-config --config configs/forecast_validation_study.yaml
+```
+
+The six planner arms train for 24 epochs each with seeds 7, 17 and 27. Completed training requests can be resumed with the same command. A changed training configuration or manifest requires a new output directory. The fixed CARLA evaluator retains all attempts, including simulator errors; rerunning a completed protocol reads its recorded outcomes instead of selecting new attempts.
+
+Evaluation caches verify checkpoint, manifest, evaluator source and result hashes. An invalid evaluation is regenerated while retaining the validation-selected checkpoint. For independent seed workers, use `python -m nusc_scene_agent.bench2drive_study --config configs/bench2drive_controlled_study.yaml --seeds 27 --defer-summary`; assign disjoint seeds to concurrent workers, then run the full command once to publish the aggregate.
+
+After all experiments complete, publish the compact tracked results and figures:
+
+```bash
+CUDA_VISIBLE_DEVICES=6 python scripts/benchmark_planner_inference.py
+python scripts/publish_benchmark_snapshot.py
+```
+
+Select an otherwise idle GPU for the optional model-cost measurement. It times synthetic on-device inputs at batch size 1 in FP32; it is not an end-to-end camera-to-control latency measurement.
+
+The publisher rejects incomplete three-seed studies, invalid result manifests and forecast validation slices containing non-validation scenes. `python scripts/refresh_forecast_metrics.py --study outputs/forecast_validation_study_v1/contextvae` can recompute metrics from verified archived predictions without drawing new stochastic trajectories.
+
+The validation-study configuration also declares the development benchmarks. Its scene audit removes overlapping scenes from the primary comparison, while retaining the complete official-validation result. To repeat just this audit on archived forecasts:
+
+```bash
+python -m nusc_scene_agent.forecast_validation --study outputs/forecast_validation_study_v1/contextvae --development benchmarks/trainval_perception_slices_v1.json outputs/risk_case_expansion_v2/perception.json --output outputs/forecast_validation_study_v1/scene_disjoint_audit
+```
+
+For a validated environment, install the direct dependencies in `requirements-validated.txt` and PyTorch 2.5.1 / torchvision 0.20.1 CUDA 12.1 wheels. See [evaluation_protocol.md](evaluation_protocol.md) for data budgets, metric semantics and known boundaries. The lower-level training and calibration commands below remain available for individual experiments; their results must not be mixed into the fixed-calibration ablation table.
+
 This page lists commands for reproducing the local benchmark pipeline. Generated files are written under `outputs/`, `artifacts/`, or `external/`; these directories are excluded from version control.
 
 ## Environment
@@ -79,6 +114,16 @@ The full-suite configuration requires this digest. The metadata file records the
 python -m nusc_scene_agent run-full-benchmark-suite
 ```
 
+To run all evaluation stages from the already validated case library without an Ollama service:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -m nusc_scene_agent run-full-benchmark-suite --reuse-case-library
+```
+
+This explicit option records the library hash and writes `resolved_config.yaml` with the effective stage configuration. The LLM case-generation stage is skipped; the other configured stages still execute.
+
+The supplied expansion and forecast-validation configurations use `reuse_validated: true`. When matching mined cases already exist, their artifact hashes, database identity, scene split and candidate limits are checked before re-exporting the current benchmarks. The report preserves the original mining provenance and records the export refresh separately. A fresh output directory performs mining normally; set this option to `false` to repeat validation. Reuse preserves the archived acceptance decisions and does not claim a new validation run.
+
 The suite uses the shared scenario taxonomy in [configs/scenario_taxonomy.yaml](../configs/scenario_taxonomy.yaml) to keep dataset mining, replay evaluation, planner diagnostics, and semantic simulator demos aligned by risk family.
 
 This executes the configured pipeline in [configs/full_benchmark_suite.yaml](../configs/full_benchmark_suite.yaml):
@@ -87,7 +132,12 @@ This executes the configured pipeline in [configs/full_benchmark_suite.yaml](../
 - `nuScenes` scenario-mining, perception, BEV occupancy, and world-model benchmark generation
 - `nuPlan` replay-regression sweep
 - `nuPlan` closed-loop replay sweep
+- scene-disjoint learned-retriever training and ContextVAE evaluation on the compatible forecast subset
+- three-seed planner ablations and fixed live-camera CARLA attempts
+- validated risk-case expansion with coverage and exclusion reports
+- forecasting on independently mined official-validation scenes, excluded from development feedback
 - model-in-the-loop failure mining
+- failure-query reranking using the current mining output and retrained checkpoint
 - result-registry export
 
 ## Stage-Level Commands
@@ -155,7 +205,7 @@ pip install -e ".[learned]"
 
 python -m nusc_scene_agent train-large-learned-retriever \
   --db artifacts/index/v1.0-trainval.sqlite \
-  --output outputs/learned_retriever_trainval_large_v2 \
+  --output outputs/learned_retriever_trainval_v3 \
   --max-groups-per-family 1000 \
   --epochs 20 \
   --negatives-per-query 12
@@ -186,10 +236,10 @@ pip install -e ".[forecast]"
 git clone https://github.com/xupei0610/ContextVAE.git external/ContextVAE
 
 python -m nusc_scene_agent run-contextvae-world-model-study \
-  --benchmark benchmarks/trainval_world_model_slices_v1.json \
+  --benchmark benchmarks/trainval_world_model_slices_v2.json \
   --dataroot data/sets/nuscenes \
   --version v1.0-trainval \
-  --output outputs/contextvae_world_model_study_v1 \
+  --output outputs/contextvae_world_model_study_v3 \
   --repo external/ContextVAE \
   --checkpoint external/ContextVAE/models/nuscenes_res18 \
   --device cuda \
@@ -324,11 +374,12 @@ Run failure mining from generated metric artifacts:
 ```bash
 python -m nusc_scene_agent run-failure-mining \
   --input outputs/trainval_bev_occupancy_proxy_study_v1 \
-  --input outputs/trainval_world_model_proxy_study_v1 \
-  --input outputs/contextvae_world_model_study_v1 \
+  --input outputs/trainval_world_model_proxy_study_v2 \
+  --input outputs/contextvae_world_model_study_v3 \
+  --input outputs/contextvae_expanded_study_v1 \
   --input outputs/nuplan_replay_sweep_v1 \
   --input outputs/nuplan_closed_loop_sweep_v1 \
-  --output outputs/model_in_the_loop_failure_mining_v1 \
+  --output outputs/model_in_the_loop_failure_mining_v2 \
   --max-queries 24
 ```
 

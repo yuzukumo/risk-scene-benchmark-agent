@@ -1797,12 +1797,20 @@
         "a truck merges from the passenger side into ego lane"
       ],
       "anchor_sample_token": "94fc83c54c6f4f48acdca0b2c529c305",
-      "anchor_sample_idx": 12,
+      "anchor_sample_idx": 10,
       "event_start_sample_idx": 11,
       "event_end_sample_idx": 13,
       "event_peak_sample_idx": 12,
-      "frame_count": 3,
+      "frame_count": 4,
       "frames": [
+        {
+          "sample_token": "94fc83c54c6f4f48acdca0b2c529c305",
+          "sample_idx": 10,
+          "timestamp_us": 1538984493448065,
+          "x_ego": 6.267959928263508,
+          "y_ego": -6.186895035580164,
+          "distance": 8.807098945941481
+        },
         {
           "sample_token": "ae572fa851ae494a8f9288e627db0be8",
           "sample_idx": 11,

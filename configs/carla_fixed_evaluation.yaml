@@ -1,0 +1,83 @@
+experiment:
+  id: carla_fixed_evaluation_v3
+  type: carla_fixed_evaluation
+  output: outputs/carla_fixed_evaluation_v3
+
+carla_fixed_evaluation:
+  output: outputs/carla_fixed_evaluation_v3
+  checkpoint: outputs/bench2drive_vision_e2e_final/vision_e2e_planner_calibrated.pt
+  seeds: [7, 17, 27]
+  min_completion: 0.9
+  max_safety_override_ratio: 0.0
+  settings:
+    carla_root: external/carla/latest
+    town: Town10HD_Opt
+    port: 2080
+    traffic_manager_port: 8080
+    auto_launch: true
+    keep_server: false
+    cuda_visible_devices: "6"
+    graphics_adapter: 6
+    device: cuda:0
+    launch_timeout_s: 180.0
+    rpc_timeout_s: 90.0
+    fps: 10
+    horizon_s: 30.0
+    image_size: 160
+    camera_width: 640
+    camera_height: 360
+    video_width: 1280
+    video_height: 720
+    video_encoder: libx264
+    render_gif: false
+    carla_quality_level: Low
+    route_min_length_m: 55.0
+    route_max_length_m: 110.0
+    route_preferred_length_m: 80.0
+    target_speed_mps: 5.0
+    brake_probability_threshold: 0.82
+    enable_scenario_safety_override: false
+    enable_lane_departure_guard: false
+    condition_ego_route_traffic_lights: false
+  scenarios:
+    - name: dense_0
+      type: dense_follow_overtake
+      spawn_index: 0
+      parameters: {ambient_vehicle_count: 18}
+    - name: dense_30
+      type: dense_follow_overtake
+      spawn_index: 30
+      parameters: {ambient_vehicle_count: 18}
+    - name: adjacent_50
+      type: adjacent_lane_cut_in
+      spawn_index: 50
+      parameters: {ambient_vehicle_count: 18, ambient_lane_change_percentage: 40}
+    - name: adjacent_80
+      type: adjacent_lane_cut_in
+      spawn_index: 80
+      parameters: {ambient_vehicle_count: 18, ambient_lane_change_percentage: 40}
+    - name: pedestrian_67
+      type: pedestrian_crossing
+      spawn_index: 67
+      parameters:
+        route_maneuver: right
+        require_crosswalk_near_maneuver: true
+        search_start_candidates: true
+        start_candidate_count: 32
+        start_candidate_radius_m: 130
+        prefer_rightmost_start_lane: true
+        disallow_lane_change_before_maneuver: true
+        maneuver_min_progress_m: 26
+        maneuver_max_progress_m: 55
+        min_post_maneuver_length_m: 22
+        progress_m: auto
+        crosswalk_maneuver_offset_m: 5.5
+        crosswalk_search_window_m: 42
+        crosswalk_max_route_distance_m: 12
+        lateral_offset_m: -5.2
+        actor_speed_mps: 1.4
+        pedestrian_count: 2
+        pedestrian_trigger_mode: time
+        pedestrian_trigger_time_s: 9.0
+        require_crosswalk: true
+        ambient_vehicle_count: 18

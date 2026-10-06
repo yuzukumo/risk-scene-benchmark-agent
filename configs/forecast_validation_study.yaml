@@ -1,0 +1,20 @@
+experiment:
+  id: forecast_validation_study_v1
+  type: forecast_validation_study
+  output: outputs/forecast_validation_study_v1
+
+forecast_validation_study:
+  output: outputs/forecast_validation_study_v1
+  db: artifacts/index/v1.0-trainval.sqlite
+  per_family: 30
+  candidate_limit: 180
+  reuse_validated: true
+  development_benchmarks:
+    - benchmarks/trainval_perception_slices_v1.json
+    - outputs/risk_case_expansion_v2/perception.json
+  forecast:
+    dataroot: data/sets/nuscenes
+    device: cuda:0
+    mode_count: 5
+    clustering_samples: 2000
+    seed: 1

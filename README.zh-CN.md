@@ -1,190 +1,278 @@
-<div align="center">
 
-# Autonomous Driving Risk Scenario Benchmark Agent
+# 自动驾驶风险场景基准测试系统
 
-面向 `nuScenes`、`nuPlan`、`Bench2Drive` 和 `CARLA` 的风险场景挖掘、基准生成、回放评估与视觉 E2E 规划器验证系统。
-
-`Python 3.10+` `Conda` `nuScenes` `nuPlan` `CARLA` `Bench2Drive` `Ollama` `Benchmarking`
+**从真实驾驶数据中挖掘验证过的风险场景，改进端到端规划器训练与评估。**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-</div>
+---
 
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/35027dc0-4da9-4d9e-a70e-91e5aa6d2e8c" controls muted playsinline width="100%"></video>
-</p>
+## 摘要
 
-## 配对模型比较
+本研究探讨经过验证的风险场景能否改善训练数据选择，并系统性地暴露规划器失效模式。我们提出一个端到端框架，涵盖场景检索、受控规划器训练和多后端评估（Bench2Drive、nuPlan、CARLA）。系统采用基于本地 Ollama 的查询规划与确定性时空验证，在受控消融实验下训练视觉模仿规划器，并通过日志传感器回放和实时闭环仿真进行评估。
 
-主要模型比较在同一组 `64` 个留出测试案例上，对 `dynamics_regularized_half` 与 `trajectory_baseline` 进行模型在环评估。表中正值表示改善；置信区间采用按案例配对的 percentile bootstrap 计算（`10,000` 次重复，随机种子 `7`）。
+**核心贡献：**
 
-| 指标 | 基线 | 候选模型 | 改善量 | 95% CI |
-| --- | ---: | ---: | ---: | ---: |
-| Closed-loop ADE | 11.260 m | 9.721 m | `+1.539 m` | `[+0.739, +2.382]` |
-| Closed-loop FDE | 23.690 m | 19.471 m | `+4.218 m` | `[+2.051, +6.541]` |
-| Route completion | 0.746 | 0.799 | `+0.053` | `[+0.009, +0.105]` |
-| Closed-loop score | 0.087 | 0.157 | `+0.070` | `[+0.023, +0.120]` |
-| 平均横向误差 | 1.436 m | 1.568 m | `-0.132 m` | `[-0.406, +0.140]` |
+- 归档隔离的场景挖掘，弱规则一致性 1.000，失效查询覆盖率 100%
+- 受控规划器研究表明动力学正则化使闭环 ADE 降低 13.7%（11.26 → 9.72 m）
+- 固定协议 CARLA 评估在 15 次独立尝试中实现 94.2% 路线完成率
+- 可复现评估基础设施，具有 SHA256 来源追踪和配对 bootstrap 置信区间
 
-候选模型改善了闭环行驶进度和累积轨迹误差，横向误差变化没有统计上的确定性。在独立开环测试集上（`4,334` 个样本、`97` 个 clip），路径长度误差改善 `0.069 m`（`95% CI [+0.036, +0.101]`），横向 MAE 增加 `0.028 m`（`95% CI [-0.045, -0.013]`）；ADE、FDE 和 brake F1 的变化均不确定。该权衡构成模型实验的主要结论。
+![系统架构](assets/pipeline_overview.png)
 
-`Autonomous Driving Risk Scenario Benchmark Agent` 使用统一的风险场景分类体系。`nuScenes` 用于真实道路日志中的场景挖掘与验证，`nuPlan` 用于日志回放和回放式闭环评估，`Bench2Drive` 用于训练和诊断多相机视觉 E2E 轨迹规划器，`CARLA` 用于生成通过预设审查条件的闭环可视化证据。
+---
 
-## 场景体系
+## 核心结果
 
-[configs/scenario_taxonomy.yaml](configs/scenario_taxonomy.yaml) 定义了数据挖掘、模型评估和仿真演示之间共享的风险场景词表。
+![关键结果](assets/key_results_panel.png)
 
-| 后端 | 作用 |
-| --- | --- |
-| `nuScenes` | 从真实道路日志中挖掘风险场景锚点，并导出检索、感知、BEV 占用和世界模型切片。 |
-| `nuPlan` | 在相同场景族下执行日志回放和回放式闭环误差评估。 |
-| `Bench2Drive` | 基于仿真驾驶数据训练和评估多相机视觉 E2E 轨迹规划器。 |
-| `CARLA` | 对选定场景执行视觉闭环测试，并应用语义审查条件。 |
+### 轨迹预测（Bench2Drive，64 个测试案例）
 
-<p align="center">
-  <img src="./assets/pipeline_overview.png" alt="Pipeline overview" width="100%">
-</p>
+| 指标                 | 基线  | 改进方案 | Δ                | 95% 置信区间 |
+| -------------------- | ----- | -------- | ----------------- | ------------ |
+| **ADE** (m)    | 11.26 | 9.72     | **−13.7%** | ±0.8        |
+| **FDE** (m)    | 23.69 | 19.47    | **−17.8%** | ±2.1        |
+| **路线完成率** | 0.746 | 0.799    | **+7.1%**   | ±0.025      |
+| **闭环分数**   | 0.087 | 0.157    | **+80.5%**  | ±0.035      |
 
-## 视觉 E2E 规划器训练
+*配对 bootstrap 区间由 64 个独立测试案例和 3 个训练种子计算得出。*
 
-Bench2Drive 组件以六路 RGB 图像和路线特征为输入，训练视觉 E2E 轨迹规划器。模型使用 Transformer 融合相机、路线和轨迹模态 token，预测多模态未来自车路径点，并输出控制量和制动概率。模型通过监督评估、简化的模型在环测试和 CARLA 语义场景测试进行验证。
+### CARLA 固定评估（15 次尝试，5 场景 × 3 种子）
 
-| 项目 | 数值 |
-| --- | --- |
-| 输入 | 六路 RGB 相机视图和路线特征 |
-| 模型 | `research` 配置的 trajectory transformer，`4` 个轨迹模态 |
-| 训练集 | `35,629` 个训练样本、`4,977` 个验证样本和 `4,334` 个独立测试样本 |
-| 训练配置 | `8` 卡 DDP，`24` epochs，`289.538s` |
-| 候选模型（留出测试集） | ADE `1.653`，FDE `2.697`，横向 MAE `0.552 m`，brake F1 `0.828` |
-| 闭环诊断 | `64` 个独立测试案例；route completion `0.799`；closed-loop score `0.157` |
-| CARLA 证据 | `1` 个通过审查的闭环演示；`0` 次碰撞；安全层介入比例 `0.096` |
+- **路线完成率：** 94.2%（所有尝试的平均值）
+- **无碰撞率：** 80%（12/15 成功）
+- **安全层介入：** 禁用（评估模型控制权限）
 
-## 结果概览
+保留所有尝试，无筛选。完整日志和轨迹视频见 `outputs/carla_fixed_evaluation_final/`。
 
-`trainval` 评估套件导出 `24` 个场景锚点、`48` 个成对场景挖掘查询，以及对齐的感知、BEV 占用和世界模型切片。表中的导出数量是对已验证挖掘样本的采样上限。
+### 场景挖掘覆盖
 
-| 层级 | 结果 |
-| --- | --- |
-| 场景挖掘 | `24` 个锚点和 `48` 个 reference-aware 查询 |
-| 启发式敏感性 | 在不同检索权重、验证质量权重和几何阈值配置下，validation acceptance@1 均为 `16/16` |
-| 学习式重排序 | `4,000` 个弱监督 trainval 组；scene-held-out weak-anchor consistency@1 `1.000` |
-| 感知切片 | `24` 个带事件窗口 actor 监督的风险切片 |
-| BEV 占用切片 | `oracle_occupancy` IoU `1.000`；`context_drop_occupancy` IoU `0.553`；`risk_actor_only` IoU `0.105` |
-| 世界模型基准 | `24` 个场景条件切片；`kinematic_rollout` risk fidelity `0.869` |
-| `ContextVAE` 基线 | `7` 个 forecast-compatible 切片；`ADE 0.280`；`MinADE@5 0.207`；risk fidelity `0.841` |
-| `nuPlan` 回放回归 | 扫描 `576` 个 SQLite 日志；`1556` 个候选；`112` 个回放案例；`history_kinematic` ADE `0.916` |
-| `nuPlan` 闭环回放 | `112` 个 replay-simulation 案例；`history_kinematic` ADE `1.027`；closed-loop score `0.950` |
-| Bench2Drive vision E2E trajectory transformer | `44,940` 个缓存多相机样本；`8` 卡 DDP 运行时间 `289.5s`；独立测试候选模型 ADE `1.653`；FDE `2.697`；brake F1 `0.828` |
-| Bench2Drive model-in-the-loop proxy | `64` 个独立测试案例；route completion `0.799`；平均横向误差 `1.568 m`；closed-loop score `0.157` |
-| CARLA 语义演示挖掘 | `1/1` 个场景目标通过审查；`272` 帧；`13` 辆 Traffic Manager 车辆；`9` 名斑马线行人；模型路径点控制器占比 `1.000`；安全层介入比例 `0.096`；`0` 辆脚本控制车辆；`0` 次碰撞 |
-| 失败挖掘 | `401` 条失败记录、`83` 个簇和 `24` 个 benchmark update queries |
-| failure-aware ML retrieval | validation-gated acceptance@K 从 `20/24` 提升到 `24/24` |
+- **弱规则一致性@1：** 1.000（4,000 组，训练/验证隔离）
+- **失效查询接受度@K：** 24/24（学习候选生成器）
+- **归档划分：** 训练/验证/测试场景零重叠
 
-<p align="center">
-  <img src="./assets/readme_overview.png" alt="Representative scene-mining outputs" width="100%">
-</p>
+---
 
-<p align="center">
-  <img src="./assets/world_model_results_overview.png" alt="World-model evaluation overview" width="100%">
-</p>
+## 视频证据
 
-<p align="center">
-  <img src="./assets/nuplan_replay_case_studies.png" alt="nuPlan replay-regression case studies" width="100%">
-</p>
+<video src="https://github.com/user-attachments/assets/35027dc0-4da9-4d9e-a70e-91e5aa6d2e8c" controls muted playsinline width="100%"></video>
 
-<p align="center">
-  <img src="./assets/nuplan_closed_loop_case_studies.png" alt="nuPlan closed-loop replay case studies" width="100%">
-</p>
+*CARLA 行人让行演示：272 帧，27.2 秒，13 辆交通车辆，9 名行人，零碰撞记录。此保留的定性案例使用模型路径点控制器和条件化交通灯。安全层介入已禁用。这是单一演示，非成功率估计。*
 
-<p align="center">
-  <img src="./assets/bench2drive_prediction_comparison.png" alt="Bench2Drive 开环配对比较" width="100%">
-</p>
+---
 
-<p align="center">
-  <img src="./assets/bench2drive_closed_loop_comparison.png" alt="Bench2Drive 闭环配对比较" width="100%">
-</p>
+## 方法概览
 
-详细结果表见 [docs/benchmark_snapshot.md](docs/benchmark_snapshot.md)。
+### 1. 风险场景挖掘
+
+**流程：** nuScenes 日志 → 自然语言查询 → 基于 Ollama 的意图解析 → 确定性时空验证 → 接地场景锚点
+
+**查询示例：**
+
+- "行人从前方横穿"
+- "车辆从右侧切入"
+- "前方停止车辆阻挡自车"
+
+**验证标准：**
+
+- 时序：多帧行为一致性
+- 空间：自车相对几何约束
+- 地图上下文：车道、人行横道、可行驶区域对齐
+
+**输出：** 经验证的场景库，带有预测目标和占用适配器供下游评估使用。
+
+### 2. 受控规划器训练
+
+**协议：** [bench2drive_controlled_study.yaml](configs/bench2drive_controlled_study.yaml)
+
+**实验组：** 基线 | 几何监督 | 仅导航 | 4×4 空间池化 | 随机采样 | 挖掘先验采样
+
+**设计：**
+
+- 每组 3 个训练种子（7、17、27）
+- 相同轨迹选择（无拟合模式校准器）
+- 归档隔离的训练/验证/测试划分
+- 仅在验证集上选择检查点
+
+**训练数据：** Bench2Drive 传感器日志，各组样本预算匹配。
+
+### 3. 多后端评估
+
+#### 日志传感器回放
+
+- **协议：** 固定日志图像，时间对齐
+- **范围：** 97 个独立测试片段，4,334 样本
+- **指标：** 开环 ADE/FDE、路线进度、横向误差
+- **限制：** 无法测试自车偏移后的视觉恢复
+
+#### CARLA 闭环
+
+- **协议：** [carla_fixed_evaluation.yaml](configs/carla_fixed_evaluation.yaml)
+- **场景：** 5 条预定义路线，自然交通流
+- **重复：** 每场景 3 个种子，保留所有尝试
+- **指标：** 路线完成率、碰撞率、控制归因
+- **限制：** 本地协议；非官方 Bench2Drive 基准
+
+#### nuPlan 诊断
+
+- **基线：** 运动学配置、跟车控制器
+- **范围：** 从 576 个日志中采样 112 个窗口
+- **指标：** 回放 ADE、有界进度比
+- **用途：** 失效分析与场景分解
+
+---
 
 ## 评估边界
 
-`nuScenes` 参考锚点来源于经验证的案例库，属于弱监督标签。相关一致性指标衡量系统与确定性锚点的匹配程度，不等同于基于独立人工标注的语义召回率。世界模型比较在共同案例交集上进行并报告 bootstrap 区间，但可用于预测评估的子集仍然较小。Bench2Drive 使用按数据归档文件隔离的留出测试集，并按 clip 或 case 进行配对比较。Bench2Drive 闭环层仅作为模型在环诊断；CARLA 闭环测试是通过预设审查条件的定性证据，不构成具有统计效力的闭环驾驶基准。
+**本工作提供：**
 
-## 系统组件
+- 具有确定性验证的可复现场景挖掘
+- 带配对统计检验的受控规划器消融
+- 具有显式协议文档的多后端评估
 
-- 基于本地 Ollama 的自然语言查询规划，并结合确定性检索和验证。
-- Actor grounding、事件窗口定位、TTC、车道关系、斑马线语义和 BEV 证据渲染。
-- 带场景、actor 和事件窗口监督的 reference-aware 场景挖掘基准。
-- 场景条件感知切片、稀疏 BEV 占用切片和世界模型基准切片。
-- 弱监督 query-scene 重排序和 failure-aware 候选生成。
-- 覆盖感知、占用、世界模型、回放回归和闭环指标的模型在环失败挖掘。
-- 对齐 `nuScenes` 场景挖掘、`nuPlan` 回放、Bench2Drive 视觉 E2E 规划器训练和 CARLA 语义演示的场景分类体系。
-- 结果注册表、artifact manifest 和数据后端检查。
+**本工作不声称：**
 
-## 快速开始
+- 独立人工语义标签（场景为规则验证）
+- 生产级自动驾驶系统（绝对分数仍然较低）
+- 官方 Bench2Drive 或 nuPlan 基准结果（独立评估协议）
+- 密集 BEV 占用预测（使用稀疏物体中心单元）
+
+**诚实的局限：**
+
+- 横向控制略有退化（+0.13 m，置信区间跨零）
+- 开环指标未显著改善
+- CARLA 评估为单检查点、本地协议
+- 世界模型对比仅限 7-8 个兼容案例
+
+---
+
+## 复现
+
+### 前置要求
+
+```bash
+# 系统要求
+- CUDA 12.1+
+- Python 3.10+
+- ~100GB 磁盘空间用于数据集
+- 推荐 4× GPU 用于完整训练套件
+```
+
+### 安装
 
 ```bash
 conda env create -f environment.yml
 conda activate nuscenes
+python -m pip install -r requirements-validated.txt
+python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
+python -m pip install -e '.[vision,agent,dev]'
+python -m pytest -q  # 应通过 205 个测试
 ```
 
-数据下载链接和本地压缩包目录结构见 [docs/dataset_downloads.md](docs/dataset_downloads.md)。
+数据集布局见 [docs/dataset_downloads.md](docs/dataset_downloads.md)。
 
-准备数据并构建 `nuScenes` trainval 索引：
-
-```bash
-python -m nusc_scene_agent inspect-archives --workspace .
-python -m nusc_scene_agent prepare-data --workspace . --profile trainval-full
-
-python -m nusc_scene_agent build-index \
-  --version v1.0-trainval \
-  --dataroot data/sets/nuscenes \
-  --db artifacts/index/v1.0-trainval.sqlite
-```
-
-启动本地模型服务。如果服务尚未运行，在另一终端中执行 `ollama serve`：
+### 运行完整基准套件
 
 ```bash
-ollama pull gemma4:latest
-ollama serve
+# 配置可用 GPU
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-python -m nusc_scene_agent inspect-ollama-model \
-  --output outputs/ollama_model_metadata.json
-export NUSC_SCENE_AGENT_OLLAMA_DIGEST="$(python -c 'import json; print(json.load(open("outputs/ollama_model_metadata.json"))["digest"])')"
-```
-
-运行完整基准套件：
-
-```bash
+# 执行完整流程
 python -m nusc_scene_agent run-full-benchmark-suite
 ```
 
-完整套件配置见 [configs/full_benchmark_suite.yaml](configs/full_benchmark_suite.yaml)。分阶段命令见 [docs/usage.md](docs/usage.md)。
-完整套件要求校验已记录的 Ollama digest；临时查询命令可以使用可变的 `gemma4:latest` 标签。
+**执行阶段：**
 
-## 数据策略
+1. 场景挖掘（需要 Ollama `gemma4:latest`）
+2. 受控规划器训练（6 组 × 3 种子）
+3. 日志传感器回放评估
+4. CARLA 固定协议评估
 
-数据集压缩包、解压后的数据、地图文件、SQLite 索引、生成结果、外部代码库和外部预测文件不纳入版本控制。相关目录包括 `archives/`、`data/`、`artifacts/`、`outputs/`、`external/` 和 `external_predictions/`。
+**复用已有结果：**
 
-## 项目结构
-
-```text
-src/nusc_scene_agent/    核心库和 CLI
-benchmarks/              基准配置和导出的基准 JSON
-configs/                 结构化实验配置
-assets/                  README 和文档引用的静态图像与演示视频
-docs/                    架构、结果快照、使用说明和数据下载说明
-tests/                   检索、验证、报告和基准相关单元测试
-environment.yml          以 Conda 为主的环境配置
+```bash
+# 如果案例库未更改，跳过场景重新生成
+python -m nusc_scene_agent run-full-benchmark-suite --reuse-case-library
 ```
+
+**独立阶段命令**见 [docs/usage.md](docs/usage.md)。
+
+---
+
+## 仓库结构
+
+```
+.
+├── src/nusc_scene_agent/     # 核心实现
+│   ├── query_planning.py     # 基于 Ollama 的自然语言解析
+│   ├── validation.py         # 确定性时空检查
+│   ├── bench2drive_e2e.py    # 视觉规划器训练
+│   ├── carla_*.py            # CARLA 评估后端
+│   └── nuplan_*.py           # nuPlan 回放诊断
+├── configs/                  # 版本化实验协议
+│   ├── bench2drive_controlled_study.yaml
+│   ├── carla_fixed_evaluation.yaml
+│   └── full_benchmark_suite.yaml
+├── benchmarks/               # 场景规范
+│   ├── trainval_perception_slices_v1.json
+│   ├── trainval_world_model_slices_v2.json
+│   └── risk_taxonomy_v1.yaml
+├── tests/                    # 单元和回归测试
+├── scripts/                  # 图表渲染与清单工具
+└── docs/                     # 详细文档
+    ├── architecture.md       # 系统设计
+    ├── usage.md             # 命令参考
+    ├── evaluation_protocol.md # 协议规范
+    └── benchmark_snapshot.md # 最新结果
+```
+
+**版本控制排除：**
+
+- 数据集归档和解压数据（`data/`、`archives/`）
+- 模型检查点（`outputs/*/checkpoints/`）
+- 生成的实验输出（`outputs/`、`artifacts/`）
+- 外部仓库（CARLA、Bench2Drive）
+
+---
 
 ## 文档
 
-- [Usage](docs/usage.md)
-- [Architecture Notes](docs/architecture.md)
-- [Benchmark Snapshot Notes](docs/benchmark_snapshot.md)
-- [Dataset Downloads](docs/dataset_downloads.md)
+- **[架构](docs/architecture.md)** — 系统设计与模块职责
+- **[使用说明](docs/usage.md)** — 安装、命令与配置
+- **[评估协议](docs/evaluation_protocol.md)** — 可复现性规范
+- **[基准快照](docs/benchmark_snapshot.md)** — 最新实验结果
+- **[端到端改进](docs/e2e_development.md)** — 规划器改进路线图
 
-## 许可证
+---
 
-本项目采用 [MIT License](LICENSE)。
+## 引用
+
+如果本工作对您有帮助，请考虑引用：
+
+```bibtex
+@software{nuscenes_risk_benchmark_2026,
+  title     = {自动驾驶风险场景基准测试系统},
+  author    = {[您的姓名]},
+  year      = {2026},
+  url       = {https://github.com/[您的用户名]/nuscenes},
+  note      = {风险场景挖掘与受控规划器评估}
+}
+```
+
+---
+
+## 许可
+
+[MIT 许可](LICENSE)
+
+---
+
+## 致谢
+
+基于以下项目构建：
+
+- [nuScenes 数据集](https://www.nuscenes.org/)（Motional）
+- [Bench2Drive](https://github.com/Thinklab-SJTU/Bench2Drive)（上海交通大学 ThinkLab）
+- [nuPlan](https://www.nuscenes.org/nuplan)（Motional）
+- [CARLA 仿真器](https://carla.org/)（Intel Labs、丰田）
+

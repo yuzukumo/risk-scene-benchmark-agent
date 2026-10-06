@@ -1,0 +1,13 @@
+experiment:
+  id: contextvae_expanded_study_v1
+  type: contextvae_world_model_study
+  output: outputs/contextvae_expanded_study_v1
+
+contextvae_world_model_study:
+  benchmark: outputs/risk_case_expansion_v2/forecast.json
+  output: outputs/contextvae_expanded_study_v1
+  dataroot: data/sets/nuscenes
+  device: cuda:0
+  mode_count: 5
+  clustering_samples: 2000
+  seed: 1

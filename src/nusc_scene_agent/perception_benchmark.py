@@ -355,17 +355,6 @@ def _primary_behavior(behaviors: Sequence[str]) -> str:
     return "proximity"
 
 
-def _resolve_anchor_sample_idx(
-    frames: Sequence[Dict[str, object]],
-    anchor_sample_token: str,
-    fallback_peak_idx: Optional[int],
-) -> int:
-    for frame in frames:
-        if str(frame["sample_token"]) == str(anchor_sample_token):
-            return int(frame["sample_idx"])
-    return _safe_int(fallback_peak_idx)
-
-
 def _profile_label(profile_name: str) -> str:
     return profile_name.replace("_", "-").title()
 
@@ -640,7 +629,7 @@ def generate_perception_benchmark_from_scenario_config(
             sample_token, instance_token = _parse_case_key(str(anchor["reference_case_key"]))
             anchor_row = conn.execute(
                 """
-                SELECT a.scene_token, a.scene_name, a.category_name, a.category_group, s.location
+                SELECT a.scene_token, a.scene_name, a.sample_idx, a.category_name, a.category_group, s.location
                 FROM agents a
                 JOIN samples s ON s.sample_token = a.sample_token
                 WHERE a.sample_token = ? AND a.instance_token = ?
@@ -674,8 +663,8 @@ def generate_perception_benchmark_from_scenario_config(
                 (
                     str(anchor_row["scene_token"]),
                     instance_token,
-                    int(event_range[0]),
-                    int(event_range[1]),
+                    min(int(event_range[0]), int(anchor_row["sample_idx"])),
+                    max(int(event_range[1]), int(anchor_row["sample_idx"])),
                 ),
             ).fetchall()
             if not rows:
@@ -692,11 +681,7 @@ def generate_perception_benchmark_from_scenario_config(
                 }
                 for row in rows
             ]
-            anchor_sample_idx = _resolve_anchor_sample_idx(
-                frames=frames,
-                anchor_sample_token=sample_token,
-                fallback_peak_idx=_safe_int(anchor["reference_peak_sample_idx"]),
-            )
+            anchor_sample_idx = int(anchor_row["sample_idx"])
             case = {
                 "benchmark_group": str(anchor["benchmark_group"]),
                 "reference_case_key": str(anchor["reference_case_key"]),

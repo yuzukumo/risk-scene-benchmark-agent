@@ -70,6 +70,8 @@ class VisionE2EModelConfig:
     trajectory_top_k: int = 2
     trajectory_temperature: float = 1.0
     trajectory_mode_calibrator: Optional[Dict[str, Any]] = None
+    input_mode: str = "vision_route"
+    spatial_pool_size: int = 2
 
 
 @dataclass(frozen=True)
@@ -388,6 +390,8 @@ def train_vision_e2e_planner(
     trajectory_selection: str = "argmax",
     trajectory_top_k: int = 2,
     trajectory_temperature: float = 1.0,
+    input_mode: str = "vision_route",
+    spatial_pool_size: int = 2,
     waypoint_loss_weight: float = 1.0,
     selected_waypoint_loss_weight: float = 0.5,
     displacement_loss_weight: float = 0.0,
@@ -447,6 +451,12 @@ def train_vision_e2e_planner(
         val_rows = val_rows[: int(max_val_samples)]
     if not train_rows:
         raise ValueError("No training rows found in manifest.")
+    if not _manifest_split_integrity(rows)["archive_disjoint"]:
+        raise ValueError("Training manifest contains archives shared across splits.")
+    if input_mode not in {"vision_route", "route_only"}:
+        raise ValueError("input_mode must be vision_route or route_only")
+    if int(spatial_pool_size) not in {1, 2, 4}:
+        raise ValueError("spatial_pool_size must be 1, 2 or 4")
 
     config = VisionE2EModelConfig(
         model_size=str(model_size),
@@ -460,6 +470,8 @@ def train_vision_e2e_planner(
         trajectory_selection=str(trajectory_selection),
         trajectory_top_k=max(int(trajectory_top_k), 1),
         trajectory_temperature=max(float(trajectory_temperature), 1e-6),
+        input_mode=str(input_mode),
+        spatial_pool_size=int(spatial_pool_size),
     )
     loss_config = VisionE2ELossConfig(
         waypoint_weight=float(waypoint_loss_weight),
@@ -548,8 +560,17 @@ def train_vision_e2e_planner(
             best_metric = score
             _save_planner_checkpoint(torch, best_path, model, config, epoch_row, loss_config=loss_config, data_parallel=data_parallel)
 
+    from nusc_scene_agent.artifact_manifest import build_artifact_entry, collect_runtime_provenance
+
     report = {
         "schema": BENCH2DRIVE_TRAINING_SCHEMA,
+        "provenance": collect_runtime_provenance() if is_main_process else {},
+        "manifest_sha256": build_artifact_entry(Path(manifest_path), "input", "manifest").sha256 if is_main_process else "",
+        "seed": int(seed),
+        "learning_rate": float(learning_rate),
+        "weight_decay": float(weight_decay),
+        "input_mode": str(input_mode),
+        "spatial_pool_size": int(spatial_pool_size),
         "manifest_path": str(manifest_path),
         "output_dir": str(output_dir),
         "checkpoint_path": str(best_path),
@@ -1885,7 +1906,7 @@ def _build_vision_e2e_model(config: VisionE2EModelConfig) -> Any:
                 in_channels = out_channels
             self.features = nn.Sequential(*layers)
             self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
-            self.spatial_pool = nn.AdaptiveAvgPool2d((2, 2))
+            self.spatial_pool = nn.AdaptiveAvgPool2d((config.spatial_pool_size, config.spatial_pool_size))
             self.out_dim = channels[-1]
 
         def forward(self, images: Any) -> Any:
@@ -1935,6 +1956,8 @@ def _build_vision_e2e_model(config: VisionE2EModelConfig) -> Any:
             self.brake_head = nn.Linear(hidden, 1)
 
         def forward(self, images: Any, route: Any) -> Dict[str, Any]:
+            if config.input_mode == "route_only":
+                images = torch.zeros_like(images)
             batch, camera_count, channels_in, height, width = images.shape
             encoded = self.encoder(images.reshape(batch * camera_count, channels_in, height, width))
             encoded = encoded.reshape(batch, camera_count, -1)
@@ -1964,7 +1987,8 @@ def _build_vision_e2e_model(config: VisionE2EModelConfig) -> Any:
             self.mode_count = max(int(getattr(config, "trajectory_modes", 1) or 1), 1)
             self.future_steps = int(config.future_steps)
             self.camera_embedding = nn.Parameter(torch.randn(config.camera_count, hidden) * 0.02)
-            self.spatial_embedding = nn.Parameter(torch.randn(4, hidden) * 0.02)
+            self.spatial_token_count = int(config.spatial_pool_size) ** 2
+            self.spatial_embedding = nn.Parameter(torch.randn(self.spatial_token_count, hidden) * 0.02)
             self.mode_queries = nn.Parameter(torch.randn(self.mode_count, hidden) * 0.02)
             self.trajectory_selection = str(getattr(config, "trajectory_selection", "argmax") or "argmax")
             self.trajectory_top_k = max(int(getattr(config, "trajectory_top_k", 2) or 2), 1)
@@ -2031,12 +2055,14 @@ def _build_vision_e2e_model(config: VisionE2EModelConfig) -> Any:
             )
 
         def forward(self, images: Any, route: Any) -> Dict[str, Any]:
+            if config.input_mode == "route_only":
+                images = torch.zeros_like(images)
             batch, camera_count, channels_in, height, width = images.shape
             spatial_tokens = self.encoder.spatial_tokens(images.reshape(batch * camera_count, channels_in, height, width))
-            spatial_tokens = spatial_tokens.reshape(batch, camera_count, 4, self.hidden)
+            spatial_tokens = spatial_tokens.reshape(batch, camera_count, self.spatial_token_count, self.hidden)
             camera_bias = self.camera_embedding[:camera_count].view(1, camera_count, 1, self.hidden)
-            spatial_bias = self.spatial_embedding.view(1, 1, 4, self.hidden)
-            camera_tokens = (spatial_tokens + camera_bias + spatial_bias).reshape(batch, camera_count * 4, self.hidden)
+            spatial_bias = self.spatial_embedding.view(1, 1, self.spatial_token_count, self.hidden)
+            camera_tokens = (spatial_tokens + camera_bias + spatial_bias).reshape(batch, camera_count * self.spatial_token_count, self.hidden)
             route_token = self.route_mlp(route).unsqueeze(1)
             mode_queries = self.mode_queries.unsqueeze(0).expand(batch, -1, -1)
             tokens = torch.cat([route_token, camera_tokens, mode_queries], dim=1)

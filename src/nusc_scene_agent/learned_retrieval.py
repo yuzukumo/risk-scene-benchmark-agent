@@ -14,13 +14,14 @@ from typing import Any, Dict, List, Mapping, Sequence
 import numpy as np
 
 from nusc_scene_agent.benchmark_schema import apply_benchmark_spec, load_benchmark_config
+from nusc_scene_agent.artifact_manifest import build_artifact_entry, collect_runtime_provenance, write_artifact_manifest
 from nusc_scene_agent.llm_query_planner import resolve_query
 from nusc_scene_agent.models import ParsedQuery, RetrievalCandidate
 from nusc_scene_agent.retrieval import retrieve_candidates
 
 
 DEFAULT_LEARNED_RETRIEVER_OUTPUT = Path("outputs/learned_retriever_v1")
-DEFAULT_LARGE_LEARNED_RETRIEVER_OUTPUT = Path("outputs/learned_retriever_trainval_large_v2")
+DEFAULT_LARGE_LEARNED_RETRIEVER_OUTPUT = Path("outputs/learned_retriever_trainval_v3")
 DEFAULT_LEARNED_RETRIEVER_CHECKPOINT = DEFAULT_LARGE_LEARNED_RETRIEVER_OUTPUT / "learned_retriever.pt"
 
 CATEGORY_GROUPS = ["vehicle", "bus", "truck", "pedestrian", "bicycle", "motorcycle"]
@@ -69,6 +70,7 @@ class _TrainingGroup:
     query: ParsedQuery
     positive: RetrievalCandidate
     negatives: List[RetrievalCandidate]
+    split: str = ""
 
 
 @dataclass(frozen=True)
@@ -108,7 +110,7 @@ def train_learned_scene_retriever(
             "benchmark_path": str(benchmark_path),
             "db_path": str(db_path),
         },
-        split_key="case_key",
+        split_key="scene_token",
     )
 
 
@@ -155,6 +157,11 @@ def _train_from_groups(
         raise ValueError("At least two training groups are required.")
 
     train_groups, validation_groups = _split_groups(groups, config.validation_fraction, config.seed, split_key=split_key)
+    integrity = _training_split_integrity(train_groups, validation_groups)
+    if split_key == "scene_token" and not integrity["scene_disjoint"]:
+        raise ValueError("Training and validation candidates must have disjoint scenes.")
+    if not train_groups or (config.validation_fraction > 0.0 and not validation_groups):
+        raise ValueError("Scene splitting requires both training and validation groups with same-split negatives.")
     feature_dim = len(_pair_feature_vector(groups[0].query, groups[0].positive, config))
     model = _build_pairwise_scorer(torch, feature_dim, config).to(device)
     optimizer = torch.optim.AdamW(
@@ -209,6 +216,9 @@ def _train_from_groups(
         "train_group_count": len(train_groups),
         "validation_group_count": len(validation_groups),
         "validation_split_key": split_key,
+        "split_integrity": integrity,
+        "provenance": collect_runtime_provenance(),
+        "label_semantics": "deterministic weak-rule consistency, not independently annotated semantic recall",
         "config": asdict(config),
         "model_type": "query_scene_pairwise_mlp_v1",
         "feature_dim": feature_dim,
@@ -221,6 +231,11 @@ def _train_from_groups(
                 "spec_id": group.spec_id,
                 "case_key": group.case_key,
                 "positive_scene": group.positive.scene_name,
+                "positive_scene_token": group.positive.scene_token,
+                "positive_ann_token": group.positive.ann_token,
+                "negative_scene_tokens": [candidate.scene_token for candidate in group.negatives],
+                "negative_ann_tokens": [candidate.ann_token for candidate in group.negatives],
+                "split": "train" if group.spec_id in {item.spec_id for item in train_groups} else "val",
                 "negative_count": len(group.negatives),
             }
             for group in groups
@@ -230,6 +245,11 @@ def _train_from_groups(
     report_md = output_dir / "training_report.md"
     report_json.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     report_md.write_text(_render_training_markdown(report), encoding="utf-8")
+    artifacts = [build_artifact_entry(path, "result", "learned_retrieval", output_dir)
+                 for path in [checkpoint_path, report_json, report_md]]
+    artifacts.extend(build_artifact_entry(Path(str(report_context[key])).resolve(), "input", "learned_retrieval")
+                     for key in ["db_path", "benchmark_path"] if report_context.get(key))
+    write_artifact_manifest(output_dir, artifacts)
     return report
 
 
@@ -353,13 +373,24 @@ def _build_training_groups(
     specs = [spec for spec in load_benchmark_config(benchmark_path) if spec.expect_match is not False]
     conn = sqlite3.connect(str(db_path))
     try:
+        positives = {spec.id: _load_positive_candidate(conn, spec.reference_case_keys[0])
+                     for spec in specs if spec.reference_case_keys}
+        rng = random.Random(config.seed)
+        positive_scenes = sorted({candidate.scene_token for candidate in positives.values() if candidate is not None})
+        rng.shuffle(positive_scenes)
+        validation_count = (min(len(positive_scenes) - 1, max(1, round(len(positive_scenes) * config.validation_fraction)))
+                            if len(positive_scenes) > 1 and config.validation_fraction > 0.0 else 0)
+        validation_scenes = set(positive_scenes[:validation_count])
+        other_scenes = sorted({str(row[0]) for row in conn.execute("SELECT DISTINCT scene_token FROM agents")} - set(positive_scenes))
+        rng.shuffle(other_scenes)
+        validation_scenes.update(other_scenes[:round(len(other_scenes) * config.validation_fraction)])
         groups: List[_TrainingGroup] = []
         for spec in specs:
             if not spec.reference_case_keys:
                 continue
             parsed = resolve_query(spec.natural_language, mode="rule")
             query = apply_benchmark_spec(parsed, spec)
-            positive = _load_positive_candidate(conn, spec.reference_case_keys[0])
+            positive = positives.get(spec.id)
             if positive is None:
                 continue
             retrieved = retrieve_candidates(
@@ -373,6 +404,7 @@ def _build_training_groups(
                 for candidate in retrieved
                 if candidate.ann_token != positive.ann_token
                 and "{0}:{1}".format(candidate.sample_token, candidate.instance_token) != spec.reference_case_keys[0]
+                and (candidate.scene_token in validation_scenes) == (positive.scene_token in validation_scenes)
             ][: int(config.negatives_per_query)]
             if not negatives:
                 continue
@@ -383,6 +415,7 @@ def _build_training_groups(
                     query=query,
                     positive=positive,
                     negatives=negatives,
+                    split="val" if positive.scene_token in validation_scenes else "train",
                 )
             )
     finally:
@@ -401,26 +434,41 @@ def _build_weak_training_groups(
     family_summary: List[Dict[str, Any]] = []
     conn = sqlite3.connect(str(db_path))
     try:
+        scene_tokens = sorted(str(row[0]) for row in conn.execute("SELECT DISTINCT scene_token FROM agents"))
+        rng.shuffle(scene_tokens)
+        validation_count = (
+            min(len(scene_tokens) - 1, max(1, round(len(scene_tokens) * config.validation_fraction)))
+            if config.validation_fraction > 0.0 and len(scene_tokens) > 1 else 0
+        )
+        validation_scenes = set(scene_tokens[:validation_count])
         for definition in definitions:
             positives = _load_candidates_for_where(
                 conn,
                 definition.positive_where,
                 definition.positive_params,
                 limit=int(max_groups_per_family),
+                balanced_scenes=True,
             )
             negative_pool = _load_candidates_for_where(
                 conn,
                 definition.negative_where,
                 definition.negative_params,
                 limit=max(int(max_groups_per_family) * max(int(config.negatives_per_query), 1) * 2, 256),
+                balanced_scenes=True,
             )
+            negative_partitions = {
+                split: [candidate for candidate in negative_pool
+                        if (candidate.scene_token in validation_scenes) == (split == "val")]
+                for split in ("train", "val")
+            }
             query = _weak_definition_query(definition)
             family_groups = 0
             for index, positive in enumerate(positives):
+                split = "val" if positive.scene_token in validation_scenes else "train"
                 positive_key = "{0}:{1}".format(positive.sample_token, positive.instance_token)
                 available_negatives = [
                     candidate
-                    for candidate in negative_pool
+                    for candidate in negative_partitions[split]
                     if candidate.ann_token != positive.ann_token
                     and "{0}:{1}".format(candidate.sample_token, candidate.instance_token) != positive_key
                 ]
@@ -435,6 +483,7 @@ def _build_weak_training_groups(
                         query=query,
                         positive=positive,
                         negatives=negatives,
+                        split=split,
                     )
                 )
                 family_groups += 1
@@ -563,6 +612,7 @@ def _load_candidates_for_where(
     where_clause: str,
     params: Sequence[Any],
     limit: int,
+    balanced_scenes: bool = False,
 ) -> List[RetrievalCandidate]:
     cursor = conn.execute(
         """
@@ -591,9 +641,12 @@ def _load_candidates_for_where(
         FROM agents a
         JOIN samples s ON s.sample_token = a.sample_token
         WHERE {0}
-        ORDER BY a.scene_token, a.sample_idx, a.instance_token
+        ORDER BY {1}
         LIMIT ?
-        """.format(where_clause),
+        """.format(where_clause, (
+            "ROW_NUMBER() OVER (PARTITION BY a.scene_token ORDER BY a.sample_idx, a.instance_token), a.scene_token"
+            if balanced_scenes else "a.scene_token, a.sample_idx, a.instance_token"
+        )),
         list(params) + [int(limit)],
     )
     rows = cursor.fetchall()
@@ -654,6 +707,10 @@ def _split_groups(
     seed: int,
     split_key: str,
 ) -> tuple[List[_TrainingGroup], List[_TrainingGroup]]:
+    if any(group.split for group in groups):
+        if any(group.split not in {"train", "val"} for group in groups):
+            raise ValueError("Every group must have a valid predefined split.")
+        return [group for group in groups if group.split == "train"], [group for group in groups if group.split == "val"]
     rng = random.Random(seed)
     split_values = sorted({_group_split_value(group, split_key) for group in groups})
     rng.shuffle(split_values)
@@ -668,6 +725,23 @@ def _split_groups(
     if not train:
         train, validation = list(groups), []
     return train, validation
+
+
+def _training_split_integrity(train: Sequence[_TrainingGroup], validation: Sequence[_TrainingGroup]) -> Dict[str, Any]:
+    def values(groups: Sequence[_TrainingGroup], attribute: str) -> set[str]:
+        return {str(getattr(candidate, attribute)) for group in groups
+                for candidate in [group.positive, *group.negatives]}
+
+    train_scenes, val_scenes = values(train, "scene_token"), values(validation, "scene_token")
+    shared_annotations = values(train, "ann_token") & values(validation, "ann_token")
+    return {
+        "scene_disjoint": not bool(train_scenes & val_scenes),
+        "annotation_disjoint": not bool(shared_annotations),
+        "train_scene_count": len(train_scenes),
+        "validation_scene_count": len(val_scenes),
+        "shared_scene_tokens": sorted(train_scenes & val_scenes),
+        "shared_annotation_count": len(shared_annotations),
+    }
 
 
 def _group_split_value(group: _TrainingGroup, split_key: str) -> str:

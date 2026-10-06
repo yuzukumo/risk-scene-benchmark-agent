@@ -17,14 +17,19 @@ DEFAULT_RESULT_SOURCES = [
     Path("outputs/risk_benchmark_suite_v1/experiment_result.json"),
     Path("outputs/nuplan_replay_sweep_v1/nuplan_replay_sweep_summary.json"),
     Path("outputs/nuplan_closed_loop_sweep_v1/nuplan_closed_loop_sweep_summary.json"),
-    Path("outputs/bench2drive_vision_e2e_final/training_report.json"),
-    Path("outputs/bench2drive_vision_e2e_final/eval_test/evaluation_report.json"),
-    Path("outputs/bench2drive_vision_e2e_final/diagnostics/planner_diagnostics_report.json"),
-    Path("outputs/bench2drive_vision_closed_loop_final/closed_loop_report.json"),
+    Path("outputs/bench2drive_controlled_study_v2/study_summary.json"),
+    Path("outputs/carla_fixed_evaluation_v3/fixed_evaluation.json"),
+    Path("outputs/contextvae_world_model_study_v3/contextvae_study_manifest.json"),
+    Path("outputs/contextvae_expanded_study_v1/contextvae_study_manifest.json"),
+    Path("outputs/forecast_validation_study_v1/contextvae/contextvae_study_manifest.json"),
+    Path("outputs/forecast_validation_study_v1/scene_disjoint_audit/generalization_audit.json"),
+    Path("outputs/learned_retriever_trainval_v3/training_report.json"),
+    Path("outputs/risk_case_expansion_v2/expansion_report.json"),
+    Path("outputs/failure_aware_reranking_eval_v4/failure_aware_reranking_eval.json"),
     Path("outputs/carla_semantic_demo_final/carla_semantic_demo_mining_report.json"),
     Path("outputs/carla_semantic_demo_final/carla_semantic_demo_report.json"),
     Path("outputs/carla_semantic_demo_final/carla_semantic_demo_audit.json"),
-    Path("outputs/model_in_the_loop_failure_mining_v1/failure_mining_report.json"),
+    Path("outputs/model_in_the_loop_failure_mining_v2/failure_mining_report.json"),
 ]
 
 
@@ -99,6 +104,9 @@ def _build_result_entry(path: Path) -> Optional[Dict[str, Any]]:
     schema = str(payload.get("schema") or "")
     if schema == "experiment_result_v1" and payload.get("experiment_type") == "risk_benchmark_suite":
         return _risk_suite_entry(path, payload)
+    if schema == "experiment_result_v1" and isinstance(payload.get("result"), dict):
+        payload = payload["result"]
+        schema = str(payload.get("schema") or "")
     if schema == "nuplan_replay_sweep_v1":
         return _nuplan_replay_sweep_entry(path, payload)
     if schema == "nuplan_closed_loop_sweep_v1":
@@ -111,6 +119,54 @@ def _build_result_entry(path: Path) -> Optional[Dict[str, Any]]:
         return _bench2drive_planner_diagnostics_entry(path, payload)
     if schema == "bench2drive_vision_closed_loop_v1":
         return _bench2drive_closed_loop_entry(path, payload)
+    if schema == "bench2drive_controlled_study_v1":
+        return {
+            "layer_id": "bench2drive_controlled_study", "source_path": str(path), "schema": schema,
+            "summary": {"selection": payload.get("selection"), "test_policy": payload.get("test_policy"),
+                        "seeds": dict(payload.get("protocol") or {}).get("seeds", [])},
+            "metrics": {"run_count": len(payload.get("runs", [])), "comparison_count": len(payload.get("comparisons", []))},
+            "aggregate": payload.get("aggregate", []),
+        }
+    if schema == "carla_fixed_evaluation_v1":
+        return {
+            "layer_id": "carla_fixed_evaluation", "source_path": str(path), "schema": schema,
+            "summary": {"evaluation_boundary": payload.get("evaluation_boundary")},
+            "metrics": {key: payload.get(key) for key in ["attempt_count", "completed_count", "error_count",
+                                                         "passed_count", "success_rate", "mean_route_completion", "collision_count"]},
+        }
+    if schema == "contextvae_world_model_study_v1":
+        return {
+            "layer_id": "external_forecast", "source_path": str(path), "schema": schema,
+            "summary": payload.get("protocol", {}),
+            "metrics": {**dict(payload.get("preparation") or {}),
+                        **dict(payload.get("evaluation", {}).get("overview") or {})},
+        }
+    if schema == "forecast_generalization_audit_v1":
+        return {
+            "layer_id": "forecast_generalization", "source_path": str(path), "schema": schema,
+            "summary": {"selection_policy": payload.get("selection_policy")},
+            "metrics": {key: payload.get(key) for key in ["source_case_count", "case_count", "scene_count",
+                                                         "excluded_case_count", "shared_development_scene_count"]},
+        }
+    if schema == "learned_scene_retriever_training_report_v1":
+        return {
+            "layer_id": "learned_retrieval", "source_path": str(path), "schema": schema,
+            "summary": {"label_semantics": payload.get("label_semantics"), "split_integrity": payload.get("split_integrity")},
+            "metrics": {key: payload.get(key) for key in ["group_count", "train_group_count", "validation_group_count"]},
+        }
+    if schema == "failure_aware_reranking_eval_v1":
+        return {
+            "layer_id": "failure_aware_reranking", "source_path": str(path), "schema": schema,
+            "summary": {"query_config": payload.get("query_config"), "checkpoint": payload.get("learned_checkpoint")},
+            "metrics": payload.get("overview", {}),
+        }
+    if schema == "risk_case_expansion_v1":
+        return {
+            "layer_id": "risk_case_coverage", "source_path": str(path), "schema": schema,
+            "summary": {"label_semantics": payload.get("label_semantics"), "family_counts": payload.get("family_counts")},
+            "metrics": {"case_count": payload.get("case_count"), "scene_count": payload.get("scene_count"),
+                        "forecast_case_count": payload.get("forecast", {}).get("case_count")},
+        }
     if schema == "carla_semantic_demo_mining_v1":
         return _carla_semantic_demo_mining_entry(path, payload)
     if schema == "carla_vision_closed_loop_batch_v1":

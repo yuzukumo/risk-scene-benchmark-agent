@@ -137,6 +137,8 @@ class CarlaVisionClosedLoopConfig:
     auto_launch: bool = False
     cuda_visible_devices: str = ""
     traffic_manager_port: int = 8000
+    seed: int = 7
+    graphics_adapter: int = -1
     launch_timeout_s: float = 90.0
     rpc_timeout_s: float = 30.0
     keep_server: bool = False
@@ -202,6 +204,8 @@ def run_carla_vision_closed_loop(
     auto_launch: bool = False,
     cuda_visible_devices: str = "",
     traffic_manager_port: int = 8000,
+    seed: int = 7,
+    graphics_adapter: int = -1,
     launch_timeout_s: float = 90.0,
     rpc_timeout_s: float = 30.0,
     keep_server: bool = False,
@@ -247,6 +251,8 @@ def run_carla_vision_closed_loop(
         auto_launch=bool(auto_launch),
         cuda_visible_devices=str(cuda_visible_devices),
         traffic_manager_port=int(traffic_manager_port),
+        seed=int(seed),
+        graphics_adapter=int(graphics_adapter),
         launch_timeout_s=float(launch_timeout_s),
         rpc_timeout_s=float(rpc_timeout_s),
         keep_server=bool(keep_server),
@@ -630,6 +636,8 @@ def _launch_carla_server(config: CarlaVisionClosedLoopConfig) -> subprocess.Pope
         fps=int(config.fps),
     )
     command.extend(["-stdout", "-FullStdOutLogOutput"])
+    if config.graphics_adapter >= 0:
+        command.append(f"-graphicsadapter={config.graphics_adapter}")
     launch_script = carla_root / "CarlaUE4.sh"
     if not launch_script.exists():
         raise FileNotFoundError(f"CARLA launch script not found: {launch_script}")
@@ -651,6 +659,9 @@ def _launch_carla_server(config: CarlaVisionClosedLoopConfig) -> subprocess.Pope
     finally:
         log_handle.close()
     setattr(process, "_nusc_scene_agent_log_path", log_path)
+    (Path(config.output_dir) / "carla_server_process.json").write_text(
+        json.dumps({"pid": process.pid, "command": command}), encoding="utf-8",
+    )
     return process
 
 
@@ -748,7 +759,7 @@ def _configure_traffic_manager(client: Any, config: CarlaVisionClosedLoopConfig)
     except Exception:
         pass
     try:
-        traffic_manager.set_random_device_seed(7)
+        traffic_manager.set_random_device_seed(int(config.seed))
     except Exception:
         pass
     try:

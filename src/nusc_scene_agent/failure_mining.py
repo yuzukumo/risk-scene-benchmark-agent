@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 
-DEFAULT_FAILURE_MINING_OUTPUT = Path("outputs/model_in_the_loop_failure_mining_v1")
+DEFAULT_FAILURE_MINING_OUTPUT = Path("outputs/model_in_the_loop_failure_mining_v2")
 DEFAULT_FAILURE_SOURCES = [
     Path("outputs/trainval_bev_occupancy_proxy_study_v1"),
-    Path("outputs/trainval_world_model_proxy_study_v1"),
-    Path("outputs/contextvae_world_model_study_v1"),
-    Path("outputs/nuscenes_forecast_baselines_eval"),
+    Path("outputs/trainval_world_model_proxy_study_v2"),
+    Path("outputs/contextvae_world_model_study_v3"),
+    Path("outputs/contextvae_expanded_study_v1"),
     Path("outputs/nuplan_replay_sweep_v1/nuplan_replay_sweep_failure_taxonomy.csv"),
     Path("outputs/nuplan_closed_loop_sweep_v1"),
 ]

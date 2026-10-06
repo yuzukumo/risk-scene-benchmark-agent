@@ -1,14 +1,14 @@
 experiment:
   id: failure_aware_reranking
   type: failure_aware_reranking
-  output: outputs/failure_aware_reranking_eval_v1
-  result_path: outputs/failure_aware_reranking_eval_v1/experiment_result.json
+  output: outputs/failure_aware_reranking_eval_v4
+  result_path: outputs/failure_aware_reranking_eval_v4/experiment_result.json
 
 failure_aware_reranking:
-  query_config: outputs/model_in_the_loop_failure_mining_v1/failure_update_queries.yaml
+  query_config: outputs/model_in_the_loop_failure_mining_v2/failure_update_queries.yaml
   db: artifacts/index/v1.0-trainval.sqlite
-  learned_checkpoint: outputs/learned_retriever_trainval_large_v2/learned_retriever.pt
-  output: outputs/failure_aware_reranking_eval_v1
+  learned_checkpoint: outputs/learned_retriever_trainval_v3/learned_retriever.pt
+  output: outputs/failure_aware_reranking_eval_v4
   candidate_pool: 48
   top_k: 3
   max_queries: 24

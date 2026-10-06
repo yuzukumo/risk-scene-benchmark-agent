@@ -10,6 +10,9 @@ from nusc_scene_agent.learned_retrieval import (
     run_learned_retrieval_report,
     train_learned_scene_retriever,
     train_weakly_supervised_scene_retriever,
+    _build_weak_training_groups,
+    _split_groups,
+    _training_split_integrity,
 )
 
 
@@ -128,7 +131,7 @@ def _write_fixture_db(path: Path) -> None:
             conn,
             ann_token="ann_ped_neg",
             sample_token="sample_ped_neg",
-            scene_token="scene_ped_neg",
+            scene_token="scene_ped",
             scene_name="scene-ped-neg",
             sample_idx=11,
             instance_token="inst_ped_neg",
@@ -180,7 +183,7 @@ def _write_fixture_db(path: Path) -> None:
             conn,
             ann_token="ann_vehicle_neg",
             sample_token="sample_vehicle_neg",
-            scene_token="scene_vehicle_neg",
+            scene_token="scene_vehicle",
             scene_name="scene-vehicle-neg",
             sample_idx=21,
             instance_token="inst_vehicle_neg",
@@ -274,6 +277,9 @@ class LearnedRetrievalTest(unittest.TestCase):
             checkpoint = Path(report["checkpoint_path"])
             self.assertTrue(checkpoint.exists())
             self.assertEqual(report["group_count"], 2)
+            self.assertEqual(report["validation_split_key"], "scene_token")
+            self.assertTrue(report["split_integrity"]["scene_disjoint"])
+            self.assertTrue(report["split_integrity"]["annotation_disjoint"])
             self.assertTrue((output_dir / "training_report.json").exists())
 
             result = run_learned_retrieval_report(
@@ -297,11 +303,22 @@ class LearnedRetrievalTest(unittest.TestCase):
             db_path = root / "index.sqlite"
             output_dir = root / "weak_learned"
             _write_fixture_db(db_path)
+            with sqlite3.connect(db_path) as conn:
+                # Each scene contains positive and negative examples of both families.
+                conn.execute("UPDATE agents SET scene_token = 'scene_base'")
+                for index in range(12):
+                    conn.execute(
+                        "INSERT INTO agents SELECT ann_token || ?, sample_token, ?, scene_name, sample_idx, "
+                        "instance_token || ?, category_name, category_group, distance, ttc, x_ego, y_ego, "
+                        "speed, rel_vx, rel_vy, heading_delta, is_stationary, is_front, is_rear, is_left, "
+                        "is_right, num_lidar_pts, num_radar_pts FROM agents WHERE scene_token = 'scene_base'",
+                        (f"_{index}", f"scene_{index}", f"_{index}"),
+                    )
 
             report = train_weakly_supervised_scene_retriever(
                 db_path=db_path,
                 output_dir=output_dir,
-                max_groups_per_family=1,
+                max_groups_per_family=20,
                 config=LearnedRetrieverConfig(
                     text_hash_dim=32,
                     hidden_dim=16,
@@ -317,6 +334,18 @@ class LearnedRetrievalTest(unittest.TestCase):
             self.assertEqual(report["training_source"], "weak_supervision_from_trainval_index")
             self.assertTrue(Path(report["checkpoint_path"]).exists())
             self.assertTrue((output_dir / "training_report.md").exists())
+            self.assertTrue(report["split_integrity"]["scene_disjoint"])
+            self.assertTrue(report["split_integrity"]["annotation_disjoint"])
+            self.assertGreater(report["validation_group_count"], 0)
+            groups, _ = _build_weak_training_groups(db_path, LearnedRetrieverConfig(negatives_per_query=2), 20)
+            train, validation = _split_groups(groups, 0.25, 7, "scene_token")
+            self.assertTrue(_training_split_integrity(train, validation)["scene_disjoint"])
+            for partition in (train, validation):
+                positive_scenes = {group.positive.scene_token for group in partition}
+                negative_scenes = {candidate.scene_token for group in partition for candidate in group.negatives}
+                other = validation if partition is train else train
+                other_scenes = {candidate.scene_token for group in other for candidate in [group.positive, *group.negatives]}
+                self.assertFalse((positive_scenes | negative_scenes) & other_scenes)
 
 
 if __name__ == "__main__":

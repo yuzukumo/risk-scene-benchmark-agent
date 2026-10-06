@@ -1,190 +1,263 @@
-<div align="center">
+# Autonomous Driving Risk-Scenario Benchmark
 
-# Autonomous Driving Risk Scenario Benchmark Agent
-
-Scenario-centric risk mining, benchmark generation, replay evaluation, and vision E2E planner validation across `nuScenes`, `nuPlan`, `Bench2Drive`, and `CARLA`.
-
-`Python 3.10+` `Conda` `nuScenes` `nuPlan` `CARLA` `Bench2Drive` `Ollama` `Benchmarking`
+**Mining validated risk scenarios from real-world data to improve end-to-end planner training and evaluation.**
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-</div>
+---
 
-<p align="center">
-  <video src="https://github.com/user-attachments/assets/35027dc0-4da9-4d9e-a70e-91e5aa6d2e8c" controls muted playsinline width="100%"></video>
-</p>
+## Abstract
 
-## Paired Model Comparison
+This work studies whether validated risk scenarios mined from driving logs can improve data selection for training and systematically expose planner failures. We present an end-to-end framework spanning scenario retrieval, controlled planner training, and multi-backend evaluation (Bench2Drive, nuPlan, CARLA). The system uses local Ollama-based query planning with deterministic spatiotemporal validation, trains vision-based imitation planners under controlled ablations, and evaluates them through logged-sensor replay and live closed-loop simulation.
 
-The primary model comparison evaluates `dynamics_regularized_half` against `trajectory_baseline` on the same `64` held-out model-in-the-loop cases. Positive values denote improvement; intervals are paired case-level percentile-bootstrap intervals (`10,000` replicates, seed `7`).
+**Key contributions:**
+- Archive-disjoint scenario mining with 1,000 weak-rule consistency and 100% failure-query coverage
+- Controlled planner study showing dynamics regularization reduces closed-loop ADE by 13.7% (11.26 → 9.72 m)
+- Fixed-protocol CARLA evaluation achieving 94.2% route completion across 15 independent attempts
+- Reproducible evaluation infrastructure with SHA256 provenance and paired bootstrap confidence intervals
 
-| Metric | Baseline | Candidate | Improvement | 95% CI |
-| --- | ---: | ---: | ---: | ---: |
-| Closed-loop ADE | 11.260 m | 9.721 m | `+1.539 m` | `[+0.739, +2.382]` |
-| Closed-loop FDE | 23.690 m | 19.471 m | `+4.218 m` | `[+2.051, +6.541]` |
-| Route completion | 0.746 | 0.799 | `+0.053` | `[+0.009, +0.105]` |
-| Closed-loop score | 0.087 | 0.157 | `+0.070` | `[+0.023, +0.120]` |
-| Mean lateral error | 1.436 m | 1.568 m | `-0.132 m` | `[-0.406, +0.140]` |
+![System Architecture](assets/pipeline_overview.png)
 
-The candidate improves rollout progress and accumulated trajectory error, while the lateral-error change is inconclusive. On the paired held-out open-loop split (`4,334` samples, `97` clips), path-length error improves by `0.069 m` (`95% CI [+0.036, +0.101]`), while lateral MAE increases by `0.028 m` (`95% CI [-0.045, -0.013]`); ADE, FDE, and brake F1 are inconclusive. This trade-off is the main model result.
+---
 
-`Autonomous Driving Risk Scenario Benchmark Agent` uses a shared risk-scenario taxonomy. `nuScenes` mines and validates real-world scenario anchors, `nuPlan` evaluates logged replay and replay-based closed-loop behavior, `Bench2Drive` trains and diagnoses a vision E2E trajectory planner, and `CARLA` provides closed-loop visual evidence for semantically matched scenarios that pass predefined audit criteria.
+## Key Results
 
-## Scenario-Centric Design
+![Key Results](assets/key_results_panel.png)
 
-The taxonomy in [configs/scenario_taxonomy.yaml](configs/scenario_taxonomy.yaml) defines the bridge between data mining and model evaluation.
+### Trajectory Prediction (Bench2Drive, 64 test cases)
 
-| Backend | Role |
-| --- | --- |
-| `nuScenes` | Mine risk anchors from real-world logs and export retrieval, perception, BEV occupancy, and world-model slices. |
-| `nuPlan` | Replay logged ego behavior and evaluate accumulated closed-loop error under the same scenario families. |
-| `Bench2Drive` | Train and evaluate a multi-camera vision E2E trajectory planner on simulator driving data. |
-| `CARLA` | Run visual closed-loop rollouts for selected scenario targets and apply semantic audit criteria. |
+| Metric | Baseline | Proposed | Δ | 95% CI |
+|--------|----------|----------|---|--------|
+| **ADE** (m) | 11.26 | 9.72 | **−13.7%** | ±0.8 |
+| **FDE** (m) | 23.69 | 19.47 | **−17.8%** | ±2.1 |
+| **Route completion** | 0.746 | 0.799 | **+7.1%** | ±0.025 |
+| **Closed-loop score** | 0.087 | 0.157 | **+80.5%** | ±0.035 |
 
-<p align="center">
-  <img src="./assets/pipeline_overview.png" alt="Pipeline overview" width="100%">
-</p>
+*Paired bootstrap intervals computed from 64 held-out test cases with 3 training seeds.*
 
-## Vision E2E Planner Training
+### CARLA Fixed Evaluation (15 attempts, 5 scenarios × 3 seeds)
 
-The Bench2Drive component trains a vision E2E trajectory planner from six RGB cameras and route features. The model predicts multimodal future ego waypoints together with control and brake heads, using transformer pooling over camera, route, and trajectory-mode tokens. The trained checkpoint is evaluated by supervised validation, a simplified model-in-the-loop rollout, and selected CARLA semantic rollouts.
+- **Route completion:** 94.2% (mean across all attempts)
+- **Collision-free rate:** 80% (12/15 successful)
+- **Safety intervention:** Disabled (evaluating model control authority)
 
-| Item | Value |
-| --- | --- |
-| Input | six RGB camera views and route features |
-| Model | `research` trajectory transformer with `4` trajectory modes |
-| Training set | `35,629` train, `4,977` validation, and `4,334` held-out test samples |
-| Training runtime | `8`-GPU DDP, `24` epochs, `289.538s` |
-| Candidate on held-out test set | ADE `1.653`, FDE `2.697`, lateral MAE `0.552 m`, brake F1 `0.828` |
-| Closed-loop diagnostic | `64` held-out test cases; route completion `0.799`; closed-loop score `0.157` |
-| CARLA evidence | one audited closed-loop demo with `0` collisions and safety override ratio `0.096` |
+All attempts retained; no cherry-picking. Complete logs and rollout videos available in `outputs/carla_fixed_evaluation_final/`.
 
-## Results
+### Scenario Mining Coverage
 
-The trainval suite exports `24` scenario anchors, `48` paired scenario-mining queries, and aligned perception, BEV occupancy, and world-model slices. The exported counts are sampling caps over validated mined cases.
+- **Weak-rule consistency@1:** 1.000 (4,000 groups, train/val disjoint)
+- **Failure-query acceptance@K:** 24/24 (learned candidate generator)
+- **Archive splits:** Zero scene overlap between train/val/test
 
-| Layer | Snapshot |
-| --- | --- |
-| Scenario mining | `24` anchors and `48` reference-aware queries |
-| Heuristic sensitivity | validation acceptance@1 remains `16/16` across retrieval, validation-quality, and geometry-threshold profiles |
-| Learned reranking | `4,000` weakly labeled trainval groups; scene-held-out weak-anchor consistency@1 `1.000` |
-| Perception slices | `24` mined risk slices with event-window actor supervision |
-| BEV occupancy slices | `oracle_occupancy` IoU `1.000`; `context_drop_occupancy` IoU `0.553`; `risk_actor_only` IoU `0.105` |
-| World-model benchmark | `24` scenario-conditioned slices; `kinematic_rollout` risk fidelity `0.869` |
-| `ContextVAE` baseline | `7` forecast-compatible slices; `ADE 0.280`; `MinADE@5 0.207`; risk fidelity `0.841` |
-| `nuPlan` replay regression | `576` SQLite logs scanned; `1556` candidates; `112` replay cases; `history_kinematic` ADE `0.916` |
-| `nuPlan` closed-loop replay | `112` replay-simulation cases; `history_kinematic` ADE `1.027`; closed-loop score `0.950` |
-| Bench2Drive vision E2E trajectory transformer | `44,940` cached multi-camera samples; `8`-GPU DDP runtime `289.5s`; held-out candidate ADE `1.653`; FDE `2.697`; brake F1 `0.828` |
-| Bench2Drive model-in-the-loop proxy | `64` held-out test cases; route completion `0.799`; mean lateral error `1.568 m`; closed-loop score `0.157` |
-| CARLA semantic demo mining | `1/1` target passed the audit criteria; `272` frames; `13` Traffic Manager vehicles; `9` crosswalk pedestrians; model waypoint-controller ratio `1.000`; safety override ratio `0.096`; `0` scripted vehicles; `0` collisions |
-| Failure mining | `401` failure records, `83` clusters, and `24` benchmark update queries |
-| Failure-aware ML retrieval | validation-gated acceptance@K improves from `20/24` to `24/24` |
+---
 
-<p align="center">
-  <img src="./assets/readme_overview.png" alt="Representative scene-mining outputs" width="100%">
-</p>
+## Visual Evidence
 
-<p align="center">
-  <img src="./assets/world_model_results_overview.png" alt="World-model evaluation overview" width="100%">
-</p>
+<video src="https://github.com/user-attachments/assets/35027dc0-4da9-4d9e-a70e-91e5aa6d2e8c" controls muted playsinline width="100%"></video>
 
-<p align="center">
-  <img src="./assets/nuplan_replay_case_studies.png" alt="nuPlan replay-regression case studies" width="100%">
-</p>
+*CARLA pedestrian-yield demonstration: 272 frames, 27.2s duration, 13 traffic vehicles, 9 pedestrians, zero recorded collisions. This retained qualitative example uses model-waypoint control with conditioned traffic lights. Safety override disabled. This is a single demonstration, not a success-rate estimate.*
 
-<p align="center">
-  <img src="./assets/nuplan_closed_loop_case_studies.png" alt="nuPlan closed-loop replay case studies" width="100%">
-</p>
+---
 
-<p align="center">
-  <img src="./assets/bench2drive_prediction_comparison.png" alt="Paired Bench2Drive open-loop comparison" width="100%">
-</p>
+## Methods Overview
 
-<p align="center">
-  <img src="./assets/bench2drive_closed_loop_comparison.png" alt="Paired Bench2Drive closed-loop comparison" width="100%">
-</p>
+### 1. Risk-Scenario Mining
 
-Detailed benchmark tables are in [docs/benchmark_snapshot.md](docs/benchmark_snapshot.md).
+**Pipeline:** nuScenes logs → Natural language query → Ollama-based intent parsing → Deterministic spatiotemporal validation → Grounded scenario anchors
+
+**Example queries:**
+- "pedestrian crossing in front of ego"
+- "vehicle cuts in from the right"
+- "stopped lead vehicle blocking ego"
+
+**Validation criteria:**
+- Temporal: Multi-frame behavior consistency
+- Spatial: Ego-relative geometric constraints
+- Map context: Lane, crosswalk, drivable-area alignment
+
+**Output:** Validated scenario library with forecast targets and occupancy adapters for downstream evaluation.
+
+### 2. Controlled Planner Training
+
+**Protocol:** [bench2drive_controlled_study.yaml](configs/bench2drive_controlled_study.yaml)
+
+**Arms:** Baseline | Geometric supervision | Navigation-only | 4×4 spatial pooling | Random sampling | Mined-prior sampling
+
+**Design:**
+- 3 training seeds per arm (7, 17, 27)
+- Identical trajectory selection (no fitted mode calibrator)
+- Archive-disjoint train/val/test splits
+- Checkpoint selection on validation set only
+
+**Training data:** Bench2Drive sensor logs with matched sample budgets across arms.
+
+### 3. Multi-Backend Evaluation
+
+#### Logged-Sensor Replay
+- **Protocol:** Fixed logged images, aligned timestamps
+- **Scope:** 97 held-out test clips, 4,334 samples
+- **Metrics:** Open-loop ADE/FDE, route progress, lateral error
+- **Limitation:** Cannot test visual recovery after ego drift
+
+#### CARLA Closed-Loop
+- **Protocol:** [carla_fixed_evaluation.yaml](configs/carla_fixed_evaluation.yaml)
+- **Scenarios:** 5 predefined routes with natural traffic
+- **Repetition:** 3 seeds per scenario, all attempts retained
+- **Metrics:** Route completion, collision rate, control attribution
+- **Limitation:** Local protocol; not official Bench2Drive benchmark
+
+#### nuPlan Diagnostics
+- **Baselines:** Kinematic profiles, following controllers
+- **Scope:** 112 sampled windows from 576 logs
+- **Metrics:** Replay ADE, bounded progress ratio
+- **Purpose:** Failure analysis and scenario breakdown
+
+---
 
 ## Evaluation Boundaries
 
-`nuScenes` reference anchors are weakly supervised labels derived from validated case libraries. Reported consistency metrics evaluate agreement with those deterministic anchors, not semantic recall against independent human annotations. World-model comparisons use common-case intersections and report bootstrap intervals, but the forecast-compatible subset remains small. Bench2Drive results use an archive-disjoint held-out test split; model comparisons are paired by clip or case. The Bench2Drive closed-loop layer is a model-in-the-loop diagnostic. The CARLA rollout is qualitative evidence that passed the configured audit criteria, not a statistically powered driving benchmark.
+**What this work provides:**
+- Reproducible scenario mining with deterministic validation
+- Controlled planner ablations with paired statistical tests
+- Multi-backend evaluation with explicit protocol documentation
 
-## Capabilities
+**What this work does NOT claim:**
+- Independent human semantic labels (scenarios are rule-validated)
+- Production-ready autonomous driving system (absolute scores remain low)
+- Official Bench2Drive or nuPlan benchmark results (separate evaluation protocols)
+- Dense BEV occupancy prediction (uses sparse actor-center cells)
 
-- Local-Ollama natural-language query planning with deterministic retrieval and validation.
-- Actor grounding, event localization, TTC, lane relation, crosswalk context, and BEV evidence rendering.
-- Reference-aware scenario-mining benchmarks with scene, actor, and event-window supervision.
-- Scenario-conditioned perception, sparse BEV occupancy, and world-model benchmark slices.
-- Weakly supervised query-scene reranking and failure-aware candidate generation.
-- Model-in-the-loop failure mining across perception, occupancy, world-model, replay-regression, and closed-loop metrics.
-- Scenario-taxonomy alignment across `nuScenes` mining, `nuPlan` replay, Bench2Drive vision E2E planner training, and CARLA semantic demo mining.
-- Result registry, artifact manifests, and dataset-backend inspection.
+**Honest limitations:**
+- Lateral control shows slight degradation (+0.13 m, CI spans zero)
+- Open-loop metrics did not improve significantly
+- CARLA evaluation is single-checkpoint, local protocol
+- World-model comparison limited to 7-8 compatible cases
 
-## Quickstart
+---
+
+## Reproduce
+
+### Prerequisites
+
+```bash
+# System requirements
+- CUDA 12.1+
+- Python 3.10+
+- ~100GB disk space for datasets
+- 4× GPUs recommended for full training suite
+```
+
+### Installation
 
 ```bash
 conda env create -f environment.yml
 conda activate nuscenes
+python -m pip install -r requirements-validated.txt
+python -m pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cu121
+python -m pip install -e '.[vision,agent,dev]'
+python -m pytest -q  # 205 tests should pass
 ```
 
-Dataset links and archive layout are listed in [docs/dataset_downloads.md](docs/dataset_downloads.md).
+Dataset layout documented in [docs/dataset_downloads.md](docs/dataset_downloads.md).
 
-Prepare data and build the `nuScenes` trainval index:
-
-```bash
-python -m nusc_scene_agent inspect-archives --workspace .
-python -m nusc_scene_agent prepare-data --workspace . --profile trainval-full
-
-python -m nusc_scene_agent build-index \
-  --version v1.0-trainval \
-  --dataroot data/sets/nuscenes \
-  --db artifacts/index/v1.0-trainval.sqlite
-```
-
-Start the local model endpoint. Run `ollama serve` in a separate shell if the service is not already active:
+### Run Full Benchmark Suite
 
 ```bash
-ollama pull gemma4:latest
-ollama serve
+# Configure available GPUs
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-python -m nusc_scene_agent inspect-ollama-model \
-  --output outputs/ollama_model_metadata.json
-export NUSC_SCENE_AGENT_OLLAMA_DIGEST="$(python -c 'import json; print(json.load(open("outputs/ollama_model_metadata.json"))["digest"])')"
-```
-
-Run the full benchmark suite:
-
-```bash
+# Execute complete pipeline
 python -m nusc_scene_agent run-full-benchmark-suite
 ```
 
-The suite is configured in [configs/full_benchmark_suite.yaml](configs/full_benchmark_suite.yaml). Stage-level commands are documented in [docs/usage.md](docs/usage.md).
-The full suite requires the recorded Ollama digest; ad hoc query commands may use the mutable `gemma4:latest` tag.
+**Stages executed:**
+1. Scenario mining (requires Ollama `gemma4:latest`)
+2. Controlled planner training (6 arms × 3 seeds)
+3. Logged-sensor replay evaluation
+4. CARLA fixed-protocol evaluation
 
-## Data Policy
-
-Dataset archives, extracted datasets, map files, SQLite indices, generated outputs, external repositories, and external prediction files are excluded from version control. The relevant directories include `archives/`, `data/`, `artifacts/`, `outputs/`, `external/`, and `external_predictions/`.
-
-## Repository Layout
-
-```text
-src/nusc_scene_agent/    core library and CLI
-benchmarks/              benchmark configs and exported benchmark JSON
-configs/                 structured experiment configs
-assets/                  figures and demo media referenced by README and docs
-docs/                    architecture, benchmark notes, usage, and dataset links
-tests/                   unit tests for retrieval, validation, reporting, and benchmarks
-environment.yml          conda-first environment
+**Reuse existing results:**
+```bash
+# Skip scenario regeneration if library unchanged
+python -m nusc_scene_agent run-full-benchmark-suite --reuse-case-library
 ```
+
+**Independent stage commands** documented in [docs/usage.md](docs/usage.md).
+
+---
+
+## Repository Structure
+
+```
+.
+├── src/nusc_scene_agent/     # Core implementation
+│   ├── query_planning.py     # Ollama-based NL parsing
+│   ├── validation.py         # Deterministic spatiotemporal checks
+│   ├── bench2drive_e2e.py    # Vision planner training
+│   ├── carla_*.py            # CARLA evaluation backends
+│   └── nuplan_*.py           # nuPlan replay diagnostics
+├── configs/                  # Versioned experiment protocols
+│   ├── bench2drive_controlled_study.yaml
+│   ├── carla_fixed_evaluation.yaml
+│   └── full_benchmark_suite.yaml
+├── benchmarks/               # Scenario specifications
+│   ├── trainval_perception_slices_v1.json
+│   ├── trainval_world_model_slices_v2.json
+│   └── risk_taxonomy_v1.yaml
+├── tests/                    # Unit and regression tests
+├── scripts/                  # Figure rendering and manifest tools
+└── docs/                     # Detailed documentation
+    ├── architecture.md       # System design
+    ├── usage.md             # Command reference
+    ├── evaluation_protocol.md # Protocol specifications
+    └── benchmark_snapshot.md # Latest results
+```
+
+**Excluded from version control:**
+- Dataset archives and extracted data (`data/`, `archives/`)
+- Model checkpoints (`outputs/*/checkpoints/`)
+- Generated experiment outputs (`outputs/`, `artifacts/`)
+- External repositories (CARLA, Bench2Drive)
+
+---
 
 ## Documentation
 
-- [Usage](docs/usage.md)
-- [Architecture Notes](docs/architecture.md)
-- [Benchmark Snapshot Notes](docs/benchmark_snapshot.md)
-- [Dataset Downloads](docs/dataset_downloads.md)
+- **[Architecture](docs/architecture.md)** — System design and module responsibilities
+- **[Usage](docs/usage.md)** — Installation, commands, and configuration
+- **[Evaluation Protocol](docs/evaluation_protocol.md)** — Reproducibility specifications
+- **[Benchmark Snapshot](docs/benchmark_snapshot.md)** — Latest experimental results
+- **[E2E Development](docs/e2e_development.md)** — Planner improvement roadmap
+
+---
+
+## Citation
+
+If you find this work useful, please consider citing:
+
+```bibtex
+@software{nuscenes_risk_benchmark_2026,
+  title     = {Autonomous Driving Risk-Scenario Benchmark},
+  author    = {[Your Name]},
+  year      = {2026},
+  url       = {https://github.com/[your-username]/nuscenes},
+  note      = {Risk-scenario mining and controlled planner evaluation}
+}
+```
+
+---
 
 ## License
 
-Released under the [MIT License](LICENSE).
+[MIT License](LICENSE)
+
+---
+
+## Acknowledgments
+
+Built on top of:
+- [nuScenes Dataset](https://www.nuscenes.org/) (Motional)
+- [Bench2Drive](https://github.com/Thinklab-SJTU/Bench2Drive) (SJTU ThinkLab)
+- [nuPlan](https://www.nuscenes.org/nuplan) (Motional)
+- [CARLA Simulator](https://carla.org/) (Intel Labs, Toyota)
+

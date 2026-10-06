@@ -1,4 +1,5 @@
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,11 @@ class NuPlanClosedLoopSweepTest(unittest.TestCase):
             self.assertTrue((output_dir / "nuplan_closed_loop_sweep_family_matrix.csv").exists())
             self.assertTrue((output_dir / "nuplan_closed_loop_sweep_failure_taxonomy.csv").exists())
             self.assertTrue((output_dir / "artifact_manifest.json").exists())
+            manifest = json.loads((output_dir / "artifact_manifest.json").read_text())
+            for entry in manifest["artifacts"]:
+                path = output_dir / entry["path"]
+                if path.is_file():
+                    self.assertEqual(entry["sha256"], hashlib.sha256(path.read_bytes()).hexdigest())
 
             overall_rows = [
                 row for row in payload["profile_leaderboard"] if row["study_name"] == "__overall__"

@@ -10,11 +10,16 @@ result_registry:
     - outputs/risk_benchmark_suite_v1/experiment_result.json
     - outputs/nuplan_replay_sweep_v1/nuplan_replay_sweep_summary.json
     - outputs/nuplan_closed_loop_sweep_v1/nuplan_closed_loop_sweep_summary.json
-    - outputs/bench2drive_vision_e2e_final/training_report.json
-    - outputs/bench2drive_vision_e2e_final/eval_test/evaluation_report.json
-    - outputs/bench2drive_vision_e2e_final/diagnostics/planner_diagnostics_report.json
-    - outputs/bench2drive_vision_closed_loop_final/closed_loop_report.json
+    - outputs/bench2drive_controlled_study_v2/study_summary.json
+    - outputs/carla_fixed_evaluation_v3/fixed_evaluation.json
+    - outputs/contextvae_world_model_study_v3/contextvae_study_manifest.json
+    - outputs/contextvae_expanded_study_v1/contextvae_study_manifest.json
+    - outputs/forecast_validation_study_v1/contextvae/contextvae_study_manifest.json
+    - outputs/forecast_validation_study_v1/scene_disjoint_audit/generalization_audit.json
+    - outputs/learned_retriever_trainval_v3/training_report.json
+    - outputs/risk_case_expansion_v2/expansion_report.json
+    - outputs/failure_aware_reranking_eval_v4/failure_aware_reranking_eval.json
     - outputs/carla_semantic_demo_final/carla_semantic_demo_mining_report.json
     - outputs/carla_semantic_demo_final/carla_semantic_demo_report.json
     - outputs/carla_semantic_demo_final/carla_semantic_demo_audit.json
-    - outputs/model_in_the_loop_failure_mining_v1/failure_mining_report.json
+    - outputs/model_in_the_loop_failure_mining_v2/failure_mining_report.json

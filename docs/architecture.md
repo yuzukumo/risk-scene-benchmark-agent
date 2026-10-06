@@ -2,7 +2,21 @@
 
 ## System Goal
 
-The system turns free-form risky-scene descriptions into validated driving cases, benchmark-ready artifacts, and model-in-the-loop evidence. The organizing unit is a shared risk-scenario taxonomy rather than a single dataset. `nuScenes` provides real-world scenario mining and benchmark anchors, `nuPlan` provides logged replay evaluation, `Bench2Drive` provides supervised vision-planner training data, and `CARLA` provides audit-gated visual closed-loop rollouts.
+The system tests whether validated risk scenarios improve data selection and expose planner failures. `nuScenes` provides mined anchors and a scenario-family prior, `Bench2Drive` supports controlled visual-planner experiments, `nuPlan` supplies replay baselines, and `CARLA` supplies fixed live-camera evaluations. A retained demonstration is separate qualitative evidence.
+
+![Current architecture](../assets/pipeline_overview.png)
+
+## Controlled Experiments
+
+`bench2drive_study.py` executes the configured training seeds and ablation arms, selects checkpoints on validation data, and evaluates every held-out test clip. Training arms use fixed trajectory selection without fitted mode calibration. The data-selection comparison uses the same training sample budget and unchanged validation/test sets; half of the risk-prior sampling probability remains uniform to preserve unmapped families.
+
+`bench2drive_closed_loop.py` is a logged-sensor replay diagnostic. Predictions remain attached to the logged ego pose. State integration uses actual source-frame spacing, while metrics compare states at the same timestamps. The reference route includes only observed poses within the evaluated horizon. Fixed images cannot provide visual feedback after simulated drift; the protocol is not a simulator driving benchmark.
+
+`carla_fixed_evaluation.py` freezes scenario configurations and seeds before execution. Each attempt runs in an isolated process. Completed failures and infrastructure errors are retained, and the summary reports errors separately. The fixed protocol disables safety overrides, lane-departure guards and traffic-light conditioning. It still uses navigation features and a low-level waypoint controller.
+
+The weak retriever partitions all scenes before sampling negative candidates. Reports include both positive and negative scene identities and enforce zero scene overlap. Its labels and features remain rule-derived; consistency metrics are not independent semantic accuracy.
+
+`forecast_validation_study` filters official nuScenes validation scenes before mining, preserves the original actor anchors, and applies the same continuity requirements to ContextVAE and motion baselines. Paired uncertainty resamples scenes rather than treating multiple actors from one scene as independent. This validation slice is excluded from development failure-query generation.
 
 The target workflow is:
 
@@ -239,7 +253,7 @@ The model uses:
 - spatial camera tokens and learned camera embeddings
 - a transformer encoder over route, camera, and trajectory-mode tokens
 - multiple future-trajectory modes with mode logits
-- temperature-calibrated expected trajectory selection over predicted modes
+- fixed-temperature expected trajectory selection over predicted modes; optional fitted calibration is outside the controlled study
 - control and brake heads for model-in-the-loop rollout
 
 Training uses a predecoded tensor cache and distributed data parallelism. The supervised objective combines waypoint regression, control regression, brake classification, lateral-error weighting, risk-sample weighting, and trajectory-mode classification. The resulting checkpoint is evaluated by supervised validation, simplified model-in-the-loop rollout, and selected CARLA semantic targets.
@@ -262,8 +276,12 @@ It executes:
 - `nuScenes` scenario-mining, perception, BEV occupancy, and world-model benchmark generation
 - `nuPlan` cross-split replay-regression sweep
 - `nuPlan` cross-split closed-loop replay sweep
-- Bench2Drive and CARLA result collection through the registry
+- scene-disjoint learned-retriever training and external forecast evaluation
+- controlled Bench2Drive training and evaluation across three seeds
+- fixed CARLA attempts with explicit driving-failure and simulator-error accounting
+- validated risk-case expansion with coverage reporting
 - model-in-the-loop failure mining
+- failure-query reranking using current stage outputs
 - result-registry export
 
 Each stage writes a separate experiment result, while the suite writes a compact top-level summary. Individual benchmark layers remain reusable through the same structured config interface.

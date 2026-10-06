@@ -168,7 +168,7 @@ DEFAULT_TRAINVAL_BENCHMARK = Path("benchmarks/trainval_suite_v1.yaml")
 DEFAULT_COMPARE_BENCHMARK = Path("benchmarks/trainval_language_stress_v1.yaml")
 DEFAULT_SCENARIO_MINING_BENCHMARK = Path("benchmarks/trainval_scenario_mining_v1.yaml")
 DEFAULT_PERCEPTION_BENCHMARK = Path("benchmarks/trainval_perception_slices_v1.json")
-DEFAULT_WORLD_MODEL_BENCHMARK = Path("benchmarks/trainval_world_model_slices_v1.json")
+DEFAULT_WORLD_MODEL_BENCHMARK = Path("benchmarks/trainval_world_model_slices_v2.json")
 
 
 def _add_llm_connection_args(parser: argparse.ArgumentParser) -> None:
@@ -858,6 +858,8 @@ def _build_parser() -> argparse.ArgumentParser:
     train_bench2drive_parser.add_argument("--trajectory-temperature", type=float, default=1.0)
     train_bench2drive_parser.add_argument("--waypoint-loss-weight", type=float, default=1.0)
     train_bench2drive_parser.add_argument("--selected-waypoint-loss-weight", type=float, default=0.5)
+    train_bench2drive_parser.add_argument("--input-mode", choices=["vision_route", "route_only"], default="vision_route")
+    train_bench2drive_parser.add_argument("--spatial-pool-size", type=int, choices=[1, 2, 4], default=2)
     train_bench2drive_parser.add_argument("--displacement-loss-weight", type=float, default=0.0)
     train_bench2drive_parser.add_argument("--endpoint-loss-weight", type=float, default=0.0)
     train_bench2drive_parser.add_argument("--path-length-loss-weight", type=float, default=0.0)
@@ -1075,7 +1077,9 @@ def _build_parser() -> argparse.ArgumentParser:
     carla_vision_parser.add_argument("--device", default="")
     carla_vision_parser.add_argument("--auto-launch", action="store_true")
     carla_vision_parser.add_argument("--cuda-visible-devices", default="")
+    carla_vision_parser.add_argument("--graphics-adapter", type=int, default=-1)
     carla_vision_parser.add_argument("--traffic-manager-port", type=int, default=8000)
+    carla_vision_parser.add_argument("--seed", type=int, default=7)
     carla_vision_parser.add_argument("--launch-timeout-s", type=float, default=90.0)
     carla_vision_parser.add_argument("--rpc-timeout-s", type=float, default=30.0)
     carla_vision_parser.add_argument("--keep-server", action="store_true")
@@ -1204,6 +1208,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run the full benchmark suite config.",
     )
     full_suite_parser.add_argument("--config", default="configs/full_benchmark_suite.yaml")
+    full_suite_parser.add_argument("--reuse-case-library", action="store_true",
+                                   help="Reuse and hash an existing validated case library; skip LLM case generation.")
 
     unified_cases_parser = subparsers.add_parser(
         "export-unified-cases",
@@ -2597,6 +2603,8 @@ def main() -> None:
             trajectory_selection=args.trajectory_selection,
             trajectory_top_k=args.trajectory_top_k,
             trajectory_temperature=args.trajectory_temperature,
+            input_mode=args.input_mode,
+            spatial_pool_size=args.spatial_pool_size,
             waypoint_loss_weight=args.waypoint_loss_weight,
             selected_waypoint_loss_weight=args.selected_waypoint_loss_weight,
             displacement_loss_weight=args.displacement_loss_weight,
@@ -2793,7 +2801,9 @@ def main() -> None:
             device=args.device,
             auto_launch=bool(args.auto_launch),
             cuda_visible_devices=args.cuda_visible_devices,
+            graphics_adapter=args.graphics_adapter,
             traffic_manager_port=args.traffic_manager_port,
+            seed=args.seed,
             launch_timeout_s=args.launch_timeout_s,
             rpc_timeout_s=args.rpc_timeout_s,
             keep_server=bool(args.keep_server),
@@ -2943,7 +2953,7 @@ def main() -> None:
         return
 
     if args.command == "run-full-benchmark-suite":
-        result = run_experiment_config(Path(args.config))
+        result = run_experiment_config(Path(args.config), reuse_case_library=args.reuse_case_library)
         print("Full benchmark suite:", Path(result["result"].get("output_dir", "outputs/full_benchmark_suite_v1")).resolve())
         print(json.dumps({"stages": list(result["result"].get("stages", {}).keys())}, indent=2))
         return
